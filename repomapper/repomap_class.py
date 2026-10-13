@@ -9,14 +9,14 @@ from collections import namedtuple, defaultdict
 from typing import List, Dict, Set, Optional, Tuple, Callable, Any, Union
 import shutil
 import sqlite3
-from utils import Tag
+from repomapper.utils import Tag
 from dataclasses import dataclass
 import diskcache
 import networkx as nx
 from grep_ast import TreeContext
-from utils import count_tokens, read_text, Tag
-from scm import get_scm_fname
-from importance import filter_important_files
+from repomapper.utils import count_tokens, read_text, Tag
+from repomapper.scm import get_scm_fname
+from repomapper.importance import filter_important_files
 
 
 @dataclass

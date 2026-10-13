@@ -38,7 +38,7 @@ I then used a combination of Aider w/Claude 3.7, Cline w/Gemini 2.5 Pro Preview 
 ## Example Output
 
 ```
-> python repomap.py . --chat-files repomap_class.py
+> repomap . --chat-files repomap_class.py
 Chat files: ['/mnt/programming/RepoMapper/repomap_class.py']
 repomap_class.py:
 (Rank value: 10.8111)
@@ -90,9 +90,13 @@ importance.py:
 
 ## Installation
 
+With [uv](https://docs.astral.sh/uv/) (works on Linux, macOS and Windows; no Python install needed):
+
 ```bash
-pip install -r requirements.txt
+uv tool install git+https://github.com/Ghoughpteighbteau/RepoMapper
 ```
+
+This installs the `repomap` CLI and the `repomap-mcp` server. Alternatively, `pip install .` from a checkout.
 
 ----------
 
@@ -102,34 +106,34 @@ pip install -r requirements.txt
 
 ```bash
 # Map current directory
-python repomap.py .
+repomap .
 
 # Map specific directory with custom token limit
-python repomap.py src/ --map-tokens 2048
+repomap src/ --map-tokens 2048
 
 # Map specific files
-python repomap.py file1.py file2.py
+repomap file1.py file2.py
 
 # Specify chat files (higher priority) vs other files
-python repomap.py --chat-files main.py --other-files src/
+repomap --chat-files main.py --other-files src/
 
 # Specify mentioned files and identifiers
-python repomap.py --mentioned-files config.py --mentioned-idents "main_function"
+repomap --mentioned-files config.py --mentioned-idents "main_function"
 
 # Enable verbose output
-python repomap.py . --verbose
+repomap . --verbose
 
 # Force refresh of caches
-python repomap.py . --force-refresh
+repomap . --force-refresh
 
 # Specify model for token counting
-python repomap.py . --model gpt-3.5-turbo
+repomap . --model gpt-3.5-turbo
 
 # Set maximum context window
-python repomap.py . --max-context-window 8192
+repomap . --max-context-window 8192
 
 # Exclude files with Page Rank 0
-python repomap.py . --exclude-unranked
+repomap . --exclude-unranked
 ```
 
 The tool prioritizes files in the following order:
@@ -142,22 +146,22 @@ The tool prioritizes files in the following order:
 
 ```bash
 # Enable verbose output
-python repomap.py . --verbose
+repomap . --verbose
 
 # Force refresh of caches
-python repomap.py . --force-refresh
+repomap . --force-refresh
 
 # Specify model for token counting
-python repomap.py . --model gpt-3.5-turbo
+repomap . --model gpt-3.5-turbo
 
 # Set maximum context window
-python repomap.py . --max-context-window 8192
+repomap . --max-context-window 8192
 
 # Exclude files with Page Rank 0
-python repomap.py . --exclude-unranked
+repomap . --exclude-unranked
 
 # Mention specific files or identifiers for higher priority
-python repomap.py . --mentioned-files config.py --mentioned-idents "main_function"
+repomap . --mentioned-files config.py --mentioned-idents "main_function"
 ```
 
 ----------
@@ -259,32 +263,39 @@ RepoMap can also be run as an MCP (Model Context Protocol) server, allowing othe
 ### Setup
 
 1. The RepoMap MCP server uses STDIO (standard input/output) for communication. No additional configuration is required for the transport layer.
-2. To set up RepoMap as an MCP server with Cline (or similar tools like Roo), add the following configuration to your Cline settings file (e.g., `cline_mcp_settings.json`):
+2. Install it (requires [uv](https://docs.astral.sh/uv/)), which puts `repomap` and `repomap-mcp` on your PATH:
+
+```bash
+uv tool install git+https://github.com/Ghoughpteighbteau/RepoMapper
+```
+
+3. Register it with your MCP client. The client launches the server itself; there is no port.
+
+Claude Code:
+
+```bash
+claude mcp add repomap -- repomap-mcp
+```
+
+JSON-configured clients (Cline, Roo, Claude Desktop, Cursor, ...):
 
 ```json
 {
   "mcpServers": {
     "RepoMapper": {
-      "disabled": false,
-      "timeout": 60,
       "type": "stdio",
-      "command": "/usr/bin/python3",
-      "args": [
-        "/absolute/path/to/repomap_server.py"
-      ]
+      "command": "repomap-mcp"
     }
   }
 }
 ```
 
-- Replace `"/absolute/path/to/repomap_server.py"` with the actual path to your `repomap_server.py` file.
-
 ### Usage
 
-1. Run the `repomap_server.py` script:
+1. Running `repomap-mcp` directly starts the server and waits for a client on STDIO (it takes no arguments):
 
 ```bash
-python repomap_server.py
+repomap-mcp
 ```
 
 2. The server will start and listen for requests via STDIO.

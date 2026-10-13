@@ -2,3 +2,5 @@
 .repomap*
 .venv
 __pycache__/
+build/
+*.egg-info/

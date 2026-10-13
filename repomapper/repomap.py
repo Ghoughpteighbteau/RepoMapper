@@ -13,10 +13,10 @@ import sys
 from pathlib import Path
 from typing import List
 
-from utils import count_tokens, read_text, Tag
-from scm import get_scm_fname
-from importance import is_important, filter_important_files
-from repomap_class import RepoMap
+from repomapper.utils import count_tokens, read_text, Tag
+from repomapper.scm import get_scm_fname
+from repomapper.importance import is_important, filter_important_files
+from repomapper.repomap_class import RepoMap
 
 
 def find_src_files(directory: str) -> List[str]:
