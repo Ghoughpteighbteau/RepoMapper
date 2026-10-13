@@ -131,13 +131,13 @@ CONFIG_TEMPLATE = """\
 # chat_file_personalization = 100.0     # PageRank seed for files in the chat
 # mentioned_file_personalization = 10.0 # PageRank seed for mentioned files
 # chat_file_ref_weight = 50.0           # edge multiplier for references made from chat files
-# core_importance = 4.0                 # PageRank seed for files in core areas when nothing is seeded (normal is 1)
-# low_importance = 0.25                 # PageRank seed for files in low areas when nothing is seeded
+# core_importance = 4.0                 # rank multiplier for files in core areas, after PageRank, when nothing is seeded (normal is 1)
+# low_importance = 0.25                 # rank multiplier for files in low areas, after PageRank, when nothing is seeded
 
 [ranking.identifier_weight]
 # Edge weight multipliers per identifier.
 # mentioned = 10.0                # identifier mentioned in the conversation
-# specific = 10.0                 # snake_case or camelCase name at least specific_min_length long
+# specific = 5.0                  # snake_case or camelCase name at least specific_min_length long
 # specific_min_length = 8
 # private = 0.1                   # name starts with "_"
 # common = 0.1                    # defined in more than common_definers files

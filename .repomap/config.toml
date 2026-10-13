@@ -17,7 +17,7 @@
 [ranking.identifier_weight]
 # Edge weight multipliers per identifier.
 # mentioned = 10.0                # identifier mentioned in the conversation
-# specific = 10.0                 # snake_case or camelCase name at least specific_min_length long
+# specific = 5.0                  # snake_case or camelCase name at least specific_min_length long
 # specific_min_length = 8
 # private = 0.1                   # name starts with "_"
 # common = 0.1                    # defined in more than common_definers files

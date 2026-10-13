@@ -326,3 +326,46 @@ def test_outline_demotes_test_files_from_areas_globs(tmp_path):
 
     assert "1 test" in out
     assert "test_helper" not in out and "Dependencies" not in out
+
+
+def test_low_importance_scales_rank_after_pagerank(tmp_path):
+    # hub.ts is referenced from many files, other.ts from one; low importance used to only shrink hub's seed,
+    # which its incoming links swamped
+    files = {"hub.ts": "export function hubHelper() {}\n", "other.ts": "export function otherHelper() {}\n"}
+    files.update({f"page{i}.ts": "hubHelper();\n" for i in range(3)})
+    files["main.ts"] = "otherHelper();\n"
+    fnames = make_project(tmp_path, files)
+    plain = make_repomap(tmp_path).build_ranking([], fnames)
+    assert plain.file_ranks["hub.ts"] > plain.file_ranks["other.ts"]
+
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."hub.ts"]\nimportance = "low"\n')
+    tilted = make_repomap(tmp_path).build_ranking([], fnames)
+
+    assert tilted.file_ranks["hub.ts"] < tilted.file_ranks["other.ts"]
+    assert tilted.ident_ranks[("hub.ts", "hubHelper")] < tilted.ident_ranks[("other.ts", "otherHelper")]
+
+
+def test_core_importance_multiplies_the_pagerank_result(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    plain = make_repomap(tmp_path).build_ranking([], files).file_ranks
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."core.ts"]\nimportance = "core"\n')
+    tilted = make_repomap(tmp_path).build_ranking([], files).file_ranks
+
+    assert tilted["core.ts"] / tilted["alone.ts"] == pytest.approx(4.0 * plain["core.ts"] / plain["alone.ts"])
+    assert sum(tilted.values()) == pytest.approx(1.0)
+
+
+def test_seeded_ranking_ignores_importance(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    plain = make_repomap(tmp_path).build_ranking([files[1]], files).file_ranks
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."core.ts"]\nimportance = "low"\n')
+    tilted = make_repomap(tmp_path).build_ranking([files[1]], files).file_ranks
+
+    assert tilted == pytest.approx(plain)
+
+
+def test_default_specific_identifier_weight_is_5():
+    assert IdentifierWeightConfig().specific == 5.0

@@ -25,7 +25,7 @@ class LanguagesConfig:
 @dataclass
 class IdentifierWeightConfig:
     mentioned: float = 10.0
-    specific: float = 10.0
+    specific: float = 5.0
     specific_min_length: int = 8
     private: float = 0.1
     common: float = 0.1

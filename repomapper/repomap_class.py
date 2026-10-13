@@ -559,18 +559,20 @@ class RepoMap:
             return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
                            chat_rel_fnames)
         
-        # Without seeds, areas.toml importance tilts PageRank toward core areas and away from low ones, and
-        # recent commits toward live code. Both multiply: stable hubs rarely change but PageRank finds them.
+        # Without seeds, recent commits tilt PageRank toward live code (a seed: stable hubs rarely change but
+        # PageRank still finds them). areas.toml importance is applied to the result below instead, since
+        # link mass swamped it as a seed.
         git_history = None
+        importance_mul: Dict[str, float] = {}
         if not personalization:
             history = self.history()
             git_history = history.summary() if history else "unavailable (not a git repository, or no commits)"
             factors = activity_factors(history, G.nodes(), self.config.git)
-            weighted = any(e.importance for e in [*self.areas.entries.values(), *self.areas.globs.values()])
-            if factors or weighted:
+            if factors:
+                personalization = {node: factors.get(node, 1.0) for node in G.nodes()}
+            if any(e.importance for e in [*self.areas.entries.values(), *self.areas.globs.values()]):
                 seed = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
-                personalization = {node: seed[self.areas.resolve(node).importance] * factors.get(node, 1.0)
-                                   for node in G.nodes()}
+                importance_mul = {node: seed[self.areas.resolve(node).importance] for node in G.nodes()}
 
         # Run PageRank
         try:
@@ -581,6 +583,23 @@ class RepoMap:
             # Fallback to uniform ranking
             ranks = {node: 1.0 for node in G.nodes()}
         
+        # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
+        # referenced rather than inheriting its file's rank (which let one popular file fill the map)
+        ident_ranks: Dict[Tuple[str, str], float] = defaultdict(float)
+        for src in G.nodes():
+            out_edges = G.out_edges(src, data=True)
+            total_weight = sum(data["weight"] for _, _, data in out_edges)
+            for _, dst, data in out_edges:
+                ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
+
+        # Unseeded: scale each file's rank and its definitions' by its areas.toml importance, renormalized
+        if importance_mul:
+            ranks = {node: r * importance_mul.get(node, 1.0) for node, r in ranks.items()}
+            total = sum(ranks.values()) or 1.0
+            ranks = {node: r / total for node, r in ranks.items()}
+            ident_ranks = defaultdict(float, {(dst, name): r * importance_mul.get(dst, 1.0) / total
+                                              for (dst, name), r in ident_ranks.items()})
+
         # Update excluded dictionary with status information
         for fname in set(chat_fnames + other_fnames):
             if fname in excluded:
@@ -600,15 +619,6 @@ class RepoMap:
             parseable_files=parseable_files,
         )
         
-        # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
-        # referenced rather than inheriting its file's rank (which let one popular file fill the map)
-        ident_ranks: Dict[Tuple[str, str], float] = defaultdict(float)
-        for src in G.nodes():
-            out_edges = G.out_edges(src, data=True)
-            total_weight = sum(data["weight"] for _, _, data in out_edges)
-            for _, dst, data in out_edges:
-                ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
-
         # A name also defined outside functions in the same file is no local helper
         nested = {rel: {name for name, n in counts.items() if n == def_counts[(rel, name)]}
                   for rel, counts in nested.items()}
