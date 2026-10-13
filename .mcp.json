@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "repomap": { "command": "repomap-mcp" }
+  }
+}
