@@ -14,6 +14,9 @@ from dataclasses import dataclass
 import diskcache
 import networkx as nx
 from grep_ast import TreeContext
+from pygments.lexers import guess_lexer_for_filename
+from pygments.token import Token
+from pygments.util import ClassNotFound
 from repomapper.utils import count_tokens, read_text, Tag
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
@@ -29,7 +32,7 @@ class FileReport:
 
 
 # Constants
-CACHE_VERSION = 2
+CACHE_VERSION = 1
 
 TAGS_CACHE_DIR = os.path.join(os.getcwd(), f".repomap.tags.cache.v{CACHE_VERSION}")
 SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
@@ -180,6 +183,18 @@ class RepoMap:
         
         return tags
     
+    def get_pygments_refs(self, fname: str, rel_fname: str, code: str) -> List[Tag]:
+        """Extract identifier references from a file using pygments tokens."""
+        try:
+            lexer = guess_lexer_for_filename(fname, code)
+        except ClassNotFound:
+            return []
+        return [
+            Tag(rel_fname=rel_fname, fname=fname, line=-1, name=text, kind="ref")
+            for token_type, text in lexer.get_tokens(code)
+            if token_type in Token.Name
+        ]
+
     def get_tags_raw(self, fname: str, rel_fname: str) -> List[Tag]:
         """Parse file to extract tags using Tree-sitter."""
         try:
@@ -244,7 +259,13 @@ class RepoMap:
                         name=name,
                         kind=kind
                     ))
-            
+
+            # Some query files only capture definitions (e.g. TypeScript, C++).
+            # Backfill references from pygments name tokens so ranking has edges.
+            kinds = {tag.kind for tag in tags}
+            if "def" in kinds and "ref" not in kinds:
+                tags.extend(self.get_pygments_refs(fname, rel_fname, code))
+
             return tags
             
         except Exception as e:
@@ -348,7 +369,7 @@ class RepoMap:
                 ranks = nx.pagerank(G, personalization=personalization, alpha=0.85)
             else:
                 ranks = {node: 1.0 for node in G.nodes()}
-        except:
+        except ZeroDivisionError:
             # Fallback to uniform ranking
             ranks = {node: 1.0 for node in G.nodes()}
         

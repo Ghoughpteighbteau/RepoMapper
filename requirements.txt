@@ -5,3 +5,5 @@ grep-ast>=0.3.0
 tree-sitter>=0.25.0,<0.26
 pygments>=2.14.0
 fastmcp
+numpy
+scipy

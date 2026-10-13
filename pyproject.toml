@@ -11,7 +11,9 @@ dependencies = [
     "fastmcp>=2.11.3",
     "grep-ast>=0.3.0",
     "networkx>=3.0",
+    "numpy>=2.0",
     "pygments>=2.14.0",
+    "scipy>=1.13",
     "tiktoken>=0.5.0",
     "tree-sitter>=0.25.0,<0.26",
 ]
@@ -25,3 +27,11 @@ packages = ["repomapper"]
 
 [tool.setuptools.package-data]
 repomapper = ["queries/**/*.scm"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+python_files = ["*_test.py"]
