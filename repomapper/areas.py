@@ -9,6 +9,8 @@ from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
+from repomapper.config import GitConfig
+from repomapper.history import History, read_history
 from repomapper.utils import REPOMAP_DIR
 
 AREAS_FILE = f"{REPOMAP_DIR}/areas.toml"
@@ -160,7 +162,7 @@ def readme_sentence(directory: str) -> Optional[str]:
     return None
 
 
-def starter_entries(root: str, files: List[str]) -> str:
+def starter_entries(root: str, files: List[str], history: Optional[History] = None) -> str:
     """Commented-out entries for the project's main areas, with hints derived from files and git."""
     tree: Dict[str, List[str]] = {}
     for f in files:
@@ -173,12 +175,17 @@ def starter_entries(root: str, files: List[str]) -> str:
     if not areas:
         return ""
 
+    if history is None:
+        history = read_history(root)
     now = datetime.now(timezone.utc).date()
     blocks = ["", "# Areas found in this project, with derived hints. Uncomment and fill in what's useful."]
     for path in areas:
         langs = Counter(os.path.splitext(f)[1].lstrip(".") or "?" for f in tree[path])
         hint = f"{len(tree[path])} files ({', '.join(f'{l} {n}' for l, n in langs.most_common(3))})"
-        last = _git(root, "log", "-1", "--format=%cs", "--", path)
+        when = history.last_commit(path) if history else None
+        # Areas idle for longer than the history window (usually few) look up their last commit directly
+        last = (datetime.fromtimestamp(when, timezone.utc).date().isoformat() if when
+                else history and _git(root, "log", "-1", "--format=%cs", "--", path))
         if last:
             hint += f", last commit {last}"
         lines = ["", f"# {path}: {hint}", f'# [paths."{path}"]', '# importance = "normal"']
@@ -193,8 +200,17 @@ def starter_entries(root: str, files: List[str]) -> str:
 ENTRY_HEADER = re.compile(r'^\s*\[\s*paths\.(?:"([^"]+)"|\'([^\']+)\'|([\w.-]+))\s*\]')
 
 
-def stale_entries(root: str, areas: Areas, min_commits: int) -> List[str]:
-    """Entries with at least min_commits commits under their path since the entry was last edited."""
+def stale_entries(root: str, areas: Areas, settings: GitConfig = GitConfig(),
+                  history: Optional[History] = None) -> List[str]:
+    """Entries with at least stale_area_commits commits under their path since the entry was last edited.
+
+    Counts come from the history window, so an entry edited before it is judged on the window alone."""
+    if not areas.entries:
+        return []
+    if history is None:
+        history = read_history(root, settings)
+    if history is None:
+        return []
     blame = _git(root, "blame", "--line-porcelain", "--", AREAS_FILE)
     if not blame or not areas.entries:
         return []
@@ -217,8 +233,8 @@ def stale_entries(root: str, areas: Areas, min_commits: int) -> List[str]:
 
     stale = []
     for path, time in sorted(edited.items()):
-        count = _git(root, "rev-list", "--count", f"--since=@{time}", "HEAD", "--", path or ".")
-        if count and int(count) >= min_commits:
+        count = history.commits_since(path, time)
+        if count >= settings.stale_area_commits:
             when = datetime.fromtimestamp(time, timezone.utc).date().isoformat()
             stale.append(f'{AREAS_FILE}: paths."{path}" was last edited {when}, {count} commits under it since; '
                          "check it's still accurate")

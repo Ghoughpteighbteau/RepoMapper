@@ -134,6 +134,7 @@ async def repo_map(
             - 'definition_matches': count of matched definitions
             - 'reference_matches': count of matched references
             - 'total_files_considered': total files processed
+            - 'git_history' (unseeded maps): commits the activity signals used, or why there were none
             - 'parse_errors' (only if any): count of files that failed to parse and a few example errors
         - 'config_warnings' (only if any): problems in .repomap/config.toml or areas.toml; tell the user
         Or an 'error' key if an error occurred.
@@ -143,7 +144,7 @@ async def repo_map(
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
     config, areas = load_config(project_root), load_areas(project_root)
-    warnings = config.warnings + areas.warnings + stale_entries(project_root, areas, config.git.stale_area_commits)
+    warnings = config.warnings + areas.warnings + stale_entries(project_root, areas, config.git)
 
     # 1. Handle and validate parameters
     # Convert token_limit to integer, falling back to the configured default
@@ -220,6 +221,8 @@ async def repo_map(
             "reference_matches": file_report.reference_matches,
             "total_files_considered": file_report.total_files_considered
         }
+        if file_report.git_history:
+            report_dict["git_history"] = file_report.git_history
         errors = parse_error_summary(file_report.parse_errors, project_root)
         if errors:
             report_dict["parse_errors"] = errors
@@ -273,7 +276,7 @@ async def search_identifiers(
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
     config, areas = load_config(project_root), load_areas(project_root)
-    warnings = config.warnings + areas.warnings + stale_entries(project_root, areas, config.git.stale_area_commits)
+    warnings = config.warnings + areas.warnings + stale_entries(project_root, areas, config.git)
 
     try:
         # Initialize RepoMap with search-specific settings

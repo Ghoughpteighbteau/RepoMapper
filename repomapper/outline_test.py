@@ -25,7 +25,7 @@ def test_small_budget_folds_directories_to_one_line():
 
 
 def test_directory_too_big_to_open_stays_folded_and_smaller_ones_open():
-    out = render_outline(FILES, EDGES, 160, tokens)
+    out = render_outline(FILES, EDGES, 178, tokens)
     assert "lib/  2 files" in out and "user.ts" not in out
     assert "app.ts 20.0%: App" in out
     assert "legacy.js" not in out
@@ -66,3 +66,11 @@ def test_folded_area_stays_one_line_with_room_to_spare():
     out = render_outline(FILES, EDGES, 10_000, tokens, areas=Areas({"lib": Area(fold=True)}))
     assert "lib/  2 files" in out
     assert "user.ts" not in out
+
+
+def test_directory_lines_show_git_activity():
+    notes = {"lib": "3 commits/90d, last 2d", "front_end": "idle 3y"}
+    out = render_outline(FILES, EDGES, 10_000, tokens, activity=notes.get)
+    assert "lib/  2 files (ts 2) 70.0%, 3 commits/90d, last 2d" in out
+    assert "front_end/  1 file (js 1) 10.0%, idle 3y" in out
+    assert "ui/  1 file (ts 1) 20.0%\n" in out or "ui/  1 file (ts 1) 20.0%:" in out

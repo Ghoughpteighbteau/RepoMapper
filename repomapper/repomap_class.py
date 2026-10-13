@@ -26,6 +26,7 @@ from repomapper.importance import filter_important_files
 from repomapper.outline import OutlineFile, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
+from repomapper.history import History, activity_factors, read_history
 
 
 @dataclass
@@ -35,6 +36,7 @@ class FileReport:
     reference_matches: int          # Total reference tags
     total_files_considered: int     # Total files provided as input
     parse_errors: Dict[str, str] = field(default_factory=dict)  # File -> error, for files that failed to parse
+    git_history: Optional[str] = None  # What history signals used, or why there were none (unseeded maps only)
 
 
 @dataclass
@@ -134,6 +136,12 @@ class RepoMap:
         # Load persistent tags cache
         self.load_tags_cache()
     
+    def history(self) -> Optional[History]:
+        """Git history of the project, read once per instance (and cached on disk per HEAD)."""
+        if not hasattr(self, "_history"):
+            self._history = read_history(str(self.root), self.config.git)
+        return self._history
+
     def tags_cache_dir(self) -> Path:
         """The tags cache lives in the project's .repomap/cache/."""
         return Path(self.root) / TAGS_CACHE_DIR
@@ -481,10 +489,18 @@ class RepoMap:
             return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
                            chat_rel_fnames)
         
-        # Without seeds, areas.toml importance tilts PageRank toward core areas and away from low ones
-        if not personalization and any(e.importance for e in self.areas.entries.values()):
-            seed = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
-            personalization = {node: seed[self.areas.resolve(node).importance] for node in G.nodes()}
+        # Without seeds, areas.toml importance tilts PageRank toward core areas and away from low ones, and
+        # recent commits toward live code. Both multiply: stable hubs rarely change but PageRank finds them.
+        git_history = None
+        if not personalization:
+            history = self.history()
+            git_history = history.summary() if history else "unavailable (not a git repository, or no commits)"
+            factors = activity_factors(history, G.nodes(), self.config.git)
+            weighted = any(e.importance for e in self.areas.entries.values())
+            if factors or weighted:
+                seed = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
+                personalization = {node: seed[self.areas.resolve(node).importance] * factors.get(node, 1.0)
+                                   for node in G.nodes()}
 
         # Run PageRank
         try:
@@ -510,6 +526,7 @@ class RepoMap:
             reference_matches=total_references,
             total_files_considered=len(all_fnames),
             parse_errors=dict(self.parse_errors),
+            git_history=git_history,
         )
         
         # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
@@ -560,7 +577,10 @@ class RepoMap:
                 return []
             return sorted(n for n in names if n.upper().startswith("README") or n == "CLAUDE.md")
 
-        return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas), ranking.report
+        history = self.history()
+        activity = history.describe if history else (lambda path: None)
+        return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
+                              activity), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""

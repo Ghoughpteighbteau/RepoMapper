@@ -173,7 +173,7 @@ Examples:
     
     # Create RepoMap instance
     config, areas = load_config(str(root_path)), load_areas(str(root_path))
-    stale = stale_entries(str(root_path), areas, config.git.stale_area_commits)
+    stale = stale_entries(str(root_path), areas, config.git)
     for warning in config.warnings + areas.warnings + stale:
         tool_warning(warning)
     repo_map = RepoMap(

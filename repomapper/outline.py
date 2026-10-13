@@ -17,7 +17,8 @@ DEP_LINE_TOKENS = 20   # budget reserved per dependency line while choosing whic
 
 HEADER = (
     "Outline (no chat_files, mentioned_files or mentioned_idents given): directories folded by share of "
-    "PageRank. Pass files or identifiers to see signatures."
+    "PageRank, with git activity (commits in the last 90 days, time since the last). Pass files or identifiers "
+    "to see signatures."
 )
 
 
@@ -92,6 +93,7 @@ def render_outline(
     docs: Callable[[str], List[str]] = lambda rel_dir: [],
     settings: OutlineConfig = OutlineConfig(),
     areas: Areas = Areas(),
+    activity: Callable[[str], Optional[str]] = lambda path: None,
 ) -> Optional[str]:
     """Render the outline, opening the highest-ranked directories while it fits max_tokens."""
     if not files:
@@ -108,7 +110,9 @@ def render_outline(
 
     def summary(d: Dir) -> str:
         langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
-        return f"{d.label}  {d.count} file{'' if d.count == 1 else 's'} ({langs}) {pct(d.rank)}"
+        line = f"{d.label}  {d.count} file{'' if d.count == 1 else 's'} ({langs}) {pct(d.rank)}"
+        note = activity(d.path)
+        return f"{line}, {note}" if note else line
 
     def render(open_dirs: Set[str], deps: List[Tuple[str, str]] = ()) -> str:
         lines = [HEADER, ""]

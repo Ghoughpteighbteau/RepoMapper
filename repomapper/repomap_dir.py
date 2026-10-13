@@ -89,7 +89,8 @@ CONFIG_TEMPLATE = """\
 [git]
 # history_years = 2             # how far back git history signals look
 # bulk_commit_files = 50        # commits touching more files are skipped (reformats, renames, bumps)
-# recency_half_life_days = 90
+# recency_half_life_days = 90   # recent commits tilt unseeded ranking; a commit's weight halves over this
+# max_activity_boost = 3.0      # cap on that tilt (seed x 1..1+this); 0 turns it off
 # stale_area_commits = 100      # report areas.toml entries with this many commits under them since last edited
 """
 

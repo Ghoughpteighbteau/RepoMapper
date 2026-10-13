@@ -31,6 +31,9 @@ note = "The package; tests sit next to modules as *_test.py, run with `uv run py
 [paths."repomapper/repomap_class.py"]
 note = "RepoMap: tag parsing + cache, build_ranking (graph, PageRank), signature map, get_outline; entry point get_repo_map"
 
+[paths."repomapper/history.py"]
+note = "One cached git log pass (.repomap/cache/history.v1.json, keyed by HEAD): activity seeds, outline notes, areas staleness"
+
 [paths."repomapper/outline.py"]
 note = "Pure renderer for the unseeded directory outline (render_outline); no I/O, tested with fake files"
 

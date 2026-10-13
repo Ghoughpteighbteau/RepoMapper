@@ -1,4 +1,7 @@
 
+import os
+import subprocess
+
 import pytest
 
 from repomapper import repomap_class
@@ -210,3 +213,19 @@ def test_seeded_map_note_without_status_follows_the_colon(tmp_path):
     map_string, _ = make_repomap(tmp_path).get_repo_map(chat_files=[files[1]], other_files=files)
 
     assert "used.ts: calls helper\n" in map_string
+
+
+def test_recent_commits_raise_unseeded_rank_and_seeded_maps_ignore_them(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    plain = make_repomap(tmp_path).build_ranking([], files)
+    assert plain.report.git_history.startswith("unavailable")
+
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "PATH": os.environ["PATH"]}
+    for args in (["init", "-q"], ["add", "alone.ts"], ["commit", "-q", "-m", "x"]):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, env=env)
+    tilted = make_repomap(tmp_path).build_ranking([], files)
+
+    assert tilted.file_ranks["alone.ts"] > plain.file_ranks["alone.ts"]
+    assert tilted.report.git_history.startswith("1 commit since")
+    assert make_repomap(tmp_path).build_ranking([files[0]], files[1:]).report.git_history is None

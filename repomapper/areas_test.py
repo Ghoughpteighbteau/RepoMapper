@@ -1,7 +1,9 @@
 import os
 import re
 import subprocess
+from datetime import datetime, timedelta, timezone
 
+from repomapper.config import GitConfig
 from repomapper.areas import Area, Areas, annotation, load_areas, readme_sentence, stale_entries
 from repomapper.repomap_dir import AREAS_TEMPLATE, init_repomap_dir
 
@@ -103,12 +105,17 @@ def test_starter_entries_describe_areas_and_suggest_idle_ones_as_legacy(tmp_path
 
 def test_stale_entries_counts_commits_since_entry_was_edited(tmp_path):
     git(tmp_path, "init", "-q")
-    commit_file(tmp_path, "src/a.py", "x = 0\n", date="2024-01-01T00:00:00")
-    commit_file(tmp_path, ".repomap/areas.toml", '[paths."src"]\nnote = "x"\n', date="2024-01-02T00:00:00")
-    for i in range(3):
-        commit_file(tmp_path, f"src/b{i}.py", "x = 1\n", date=f"2024-02-0{i + 1}T00:00:00")
-    areas = load_areas(str(tmp_path))
+    def days_ago(n):
+        return (datetime.now(timezone.utc) - timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%S+0000")
 
-    stale = stale_entries(str(tmp_path), areas, 3)
-    assert len(stale) == 1 and 'paths."src" was last edited 2024-01-02, 3 commits' in stale[0]
-    assert stale_entries(str(tmp_path), areas, 4) == []
+    commit_file(tmp_path, "src/a.py", "x = 0\n", date=days_ago(40))
+    commit_file(tmp_path, ".repomap/areas.toml", '[paths."src"]\nnote = "x"\n', date=days_ago(30))
+    for i in range(3):
+        commit_file(tmp_path, f"src/b{i}.py", "x = 1\n", date=days_ago(20 - i))
+    commit_file(tmp_path, "other/c.py", "x = 1\n", date=days_ago(10))
+    areas = load_areas(str(tmp_path))
+    edited = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+
+    stale = stale_entries(str(tmp_path), areas, GitConfig(stale_area_commits=3))
+    assert len(stale) == 1 and f'paths."src" was last edited {edited}, 3 commits' in stale[0]
+    assert stale_entries(str(tmp_path), areas, GitConfig(stale_area_commits=4)) == []
