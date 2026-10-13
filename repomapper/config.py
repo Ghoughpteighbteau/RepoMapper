@@ -50,6 +50,8 @@ class RankingConfig:
     chat_file_personalization: float = 100.0
     mentioned_file_personalization: float = 10.0
     chat_file_ref_weight: float = 50.0
+    core_importance: float = 4.0
+    low_importance: float = 0.25
     identifier_weight: IdentifierWeightConfig = field(default_factory=IdentifierWeightConfig)
     definition_boost: DefinitionBoostConfig = field(default_factory=DefinitionBoostConfig)
 

@@ -1,3 +1,4 @@
+from repomapper.areas import Area, Areas
 from repomapper.config import OutlineConfig
 from repomapper.outline import OutlineFile, render_outline
 from repomapper.utils import count_tokens
@@ -53,3 +54,15 @@ def test_settings_limit_names_files_and_edges():
     assert "user.ts 50.0%: User\n" in out
     assert "+1 more files" in out
     assert out.count(" -> ") == 1
+
+
+def test_area_notes_and_status_show_on_their_lines():
+    areas = Areas({"front_end": Area(status="legacy", replaced_by="ui", note="old jQuery app")})
+    out = render_outline(FILES, EDGES, 10_000, tokens, areas=areas)
+    assert "front_end/  1 file (js 1) 10.0% [legacy, replaced by ui] — old jQuery app" in out
+
+
+def test_folded_area_stays_one_line_with_room_to_spare():
+    out = render_outline(FILES, EDGES, 10_000, tokens, areas=Areas({"lib": Area(fold=True)}))
+    assert "lib/  2 files" in out
+    assert "user.ts" not in out

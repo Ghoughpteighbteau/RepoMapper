@@ -25,6 +25,7 @@ from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 from repomapper.outline import OutlineFile, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, load_config
+from repomapper.areas import Areas, annotation, load_areas
 
 
 @dataclass
@@ -97,12 +98,14 @@ class RepoMap:
         refresh: str = "auto",
         exclude_unranked: bool = False,
         config: Optional[Config] = None,
+        areas: Optional[Areas] = None,
     ):
-        """Initialize RepoMap instance. config defaults to root/.repomap/config.toml."""
+        """Initialize RepoMap instance. config and areas default to root/.repomap/config.toml and areas.toml."""
         self.map_tokens = map_tokens
         self.max_map_tokens = map_tokens
         self.root = Path(root or os.getcwd()).resolve()
         self.config = config or load_config(str(self.root))
+        self.areas = areas or load_areas(str(self.root))
         self.token_count_func_internal = token_counter_func
         self.read_text_func_internal = file_reader_func
         self.repo_content_prefix = repo_content_prefix
@@ -478,6 +481,11 @@ class RepoMap:
             return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
                            chat_rel_fnames)
         
+        # Without seeds, areas.toml importance tilts PageRank toward core areas and away from low ones
+        if not personalization and any(e.importance for e in self.areas.entries.values()):
+            seed = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
+            personalization = {node: seed[self.areas.resolve(node).importance] for node in G.nodes()}
+
         # Run PageRank
         try:
             # Without seeds, plain PageRank still ranks files by how much the repo references them
@@ -552,7 +560,7 @@ class RepoMap:
                 return []
             return sorted(n for n in names if n.upper().startswith("README") or n == "CLAUDE.md")
 
-        return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline), ranking.report
+        return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""
@@ -690,6 +698,8 @@ class RepoMap:
             
             if not tree_output:
                 return None, 0
+            shown = {tag.rel_fname for _rank, tag in selected_tags} | chat_rel_fnames
+            tree_output = self.area_notes(shown) + tree_output
             
             tokens = self.token_count(tree_output)
             return tree_output, tokens
@@ -710,6 +720,17 @@ class RepoMap:
         
         return best_tree, file_report
     
+    def area_notes(self, rel_fnames: Set[str]) -> str:
+        """Header listing areas.toml status and notes for areas the shown files belong to."""
+        paths = self.areas.covering(rel_fnames)
+        if not paths:
+            return ""
+        lines = ["Area notes from .repomap/areas.toml:"]
+        lines += [f"  {p or '.'}{'' if p in rel_fnames else '/'}{annotation(self.areas.entries[p])}" for p in paths]
+        if any(self.areas.entries[p].status == "deprecated" for p in paths):
+            lines.append("  Don't copy patterns from deprecated areas; look where they're replaced instead.")
+        return "\n".join(lines) + "\n\n"
+
     def get_repo_map(
         self,
         chat_files: List[str] = None,

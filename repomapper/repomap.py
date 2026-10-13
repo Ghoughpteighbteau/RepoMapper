@@ -16,6 +16,7 @@ from typing import List
 from repomapper.utils import count_tokens, read_text, Tag, find_src_files
 from repomapper.repomap_dir import init_repomap_dir
 from repomapper.config import load_config
+from repomapper.areas import load_areas
 from repomapper.scm import get_scm_fname
 from repomapper.importance import is_important, filter_important_files
 from repomapper.repomap_class import RepoMap
@@ -171,8 +172,8 @@ Examples:
     mentioned_idents = set(args.mentioned_idents) if args.mentioned_idents else None
     
     # Create RepoMap instance
-    config = load_config(str(root_path))
-    for warning in config.warnings:
+    config, areas = load_config(str(root_path)), load_areas(str(root_path))
+    for warning in config.warnings + areas.warnings:
         tool_warning(warning)
     repo_map = RepoMap(
         map_tokens=args.map_tokens or config.map.token_limit,
@@ -184,6 +185,7 @@ Examples:
         max_context_window=args.max_context_window,
         exclude_unranked=args.exclude_unranked,
         config=config,
+        areas=areas,
     )
     
     # Generate the map

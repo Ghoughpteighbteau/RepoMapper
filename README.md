@@ -275,6 +275,25 @@ Commit everything except `cache/` so the team shares the same hints and exclusio
 `config.toml` is read on every run, so edits apply without restarting the MCP server. Unknown keys and values
 of the wrong type are reported (`config_warnings` in MCP responses, warnings in the CLI) and the default is used.
 
+### Area hints
+
+`areas.toml` holds what RepoMapper can't derive from the code, keyed by path relative to the project root:
+
+```toml
+[paths."src/api"]
+importance = "core"            # core | normal | low: tilts ranking when no files are given
+note = "REST backend; all DB access goes through lib/repositories"
+
+[paths."maps"]
+status = "legacy"              # active | legacy | deprecated
+replaced_by = "src/api"
+fold = true                    # always one line in the outline
+```
+
+Status, `replaced_by` and notes show on outline lines, and at the top of signature maps that include files in
+that area. The nearest entry wins per key, so a child entry only overrides the keys it sets. Unknown keys or
+values and paths that don't exist are reported like config problems.
+
 ### Ignoring files
 
 Files ignored by git are skipped automatically. Everything else RepoMapper skips is listed in `.repomap/ignore`,

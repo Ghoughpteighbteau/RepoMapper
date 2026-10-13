@@ -177,3 +177,28 @@ def test_unreferenced_defs_in_popular_file_rank_below_used_defs_elsewhere(tmp_pa
 def test_identifier_weight_uses_configured_multipliers():
     weights = IdentifierWeightConfig(specific=3.0, common=0.5)
     assert identifier_weight("get_user_name", 6, set(), weights) == 1.5
+
+
+def test_core_importance_raises_unseeded_rank(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    plain = make_repomap(tmp_path).build_ranking([], files).file_ranks
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."alone.ts"]\nimportance = "core"\n')
+    tilted = make_repomap(tmp_path).build_ranking([], files).file_ranks
+
+    assert tilted["alone.ts"] > plain["alone.ts"]
+
+
+def test_seeded_map_starts_with_notes_for_shown_areas(tmp_path):
+    files = make_project(tmp_path, {**PROJECT, "old/legacy.ts": "export function oldHelper() { return helper(2); }\n"})
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text(
+        '[paths."old"]\nstatus = "deprecated"\nreplaced_by = "core.ts"\n[paths."alone.ts"]\nnote = "unused"\n'
+    )
+    map_string, _ = make_repomap(tmp_path).get_repo_map(chat_files=[files[3]], other_files=files[:3])
+
+    header = map_string.split("\n\n")[0].splitlines()
+    assert header[0] == "Area notes from .repomap/areas.toml:"
+    assert "  old/ [deprecated, replaced by core.ts]" in header
+    assert "  alone.ts — unused" in header
+    assert "Don't copy patterns from deprecated areas" in map_string

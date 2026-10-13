@@ -58,6 +58,8 @@ CONFIG_TEMPLATE = """\
 # chat_file_personalization = 100.0     # PageRank seed for files in the chat
 # mentioned_file_personalization = 10.0 # PageRank seed for mentioned files
 # chat_file_ref_weight = 50.0           # edge multiplier for references made from chat files
+# core_importance = 4.0                 # PageRank seed for files in core areas when nothing is seeded (normal is 1)
+# low_importance = 0.25                 # PageRank seed for files in low areas when nothing is seeded
 
 [ranking.identifier_weight]
 # Edge weight multipliers per identifier.

@@ -12,6 +12,7 @@ from repomapper.repomap_class import RepoMap
 from repomapper.utils import count_tokens, read_text, find_src_files, find_git_root
 from repomapper.repomap_dir import init_repomap_dir
 from repomapper.config import load_config
+from repomapper.areas import load_areas
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -134,14 +135,15 @@ async def repo_map(
             - 'reference_matches': count of matched references
             - 'total_files_considered': total files processed
             - 'parse_errors' (only if any): count of files that failed to parse and a few example errors
-        - 'config_warnings' (only if any): problems in .repomap/config.toml; tell the user
+        - 'config_warnings' (only if any): problems in .repomap/config.toml or areas.toml; tell the user
         Or an 'error' key if an error occurred.
     """
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
-    config = load_config(project_root)
+    config, areas = load_config(project_root), load_areas(project_root)
+    warnings = config.warnings + areas.warnings
 
     # 1. Handle and validate parameters
     # Convert token_limit to integer, falling back to the configured default
@@ -195,6 +197,7 @@ async def repo_map(
             exclude_unranked=exclude_unranked,
             max_context_window=max_context_window,
             config=config,
+            areas=areas,
         )
     except Exception as e:
         log.exception(f"Failed to initialize RepoMap for project '{project_root}': {e}")
@@ -226,8 +229,8 @@ async def repo_map(
             "report": report_dict,
             "hint": hint,
         }
-        if config.warnings:
-            response["config_warnings"] = config.warnings
+        if warnings:
+            response["config_warnings"] = warnings
         return response
     except Exception as e:
         log.exception(f"Error generating repository map for project '{project_root}': {e}")
@@ -263,13 +266,14 @@ async def search_identifiers(
     
     Returns:
         Dictionary containing search results or error message, plus 'parse_errors' if any files failed to parse
-        and 'config_warnings' if .repomap/config.toml has problems (tell the user)
+        and 'config_warnings' if .repomap/config.toml or areas.toml has problems (tell the user)
     """
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
-    config = load_config(project_root)
+    config, areas = load_config(project_root), load_areas(project_root)
+    warnings = config.warnings + areas.warnings
 
     try:
         # Initialize RepoMap with search-specific settings
@@ -281,6 +285,7 @@ async def search_identifiers(
             verbose=False,
             exclude_unranked=True,
             config=config,
+            areas=areas,
         )
 
         # Find all source files in the project
@@ -339,8 +344,8 @@ async def search_identifiers(
         errors = parse_error_summary(repo_map.parse_errors, project_root)
         if errors:
             response["parse_errors"] = errors
-        if config.warnings:
-            response["config_warnings"] = config.warnings
+        if warnings:
+            response["config_warnings"] = warnings
         return response
 
     except Exception as e:

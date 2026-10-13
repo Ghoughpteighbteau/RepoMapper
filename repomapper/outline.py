@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+from repomapper.areas import Areas, annotation
 from repomapper.config import OutlineConfig
 
 DEP_LINE_TOKENS = 20   # budget reserved per dependency line while choosing which directories to open
@@ -90,6 +91,7 @@ def render_outline(
     token_count: Callable[[str], int],
     docs: Callable[[str], List[str]] = lambda rel_dir: [],
     settings: OutlineConfig = OutlineConfig(),
+    areas: Areas = Areas(),
 ) -> Optional[str]:
     """Render the outline, opening the highest-ranked directories while it fits max_tokens."""
     if not files:
@@ -101,7 +103,8 @@ def render_outline(
     def doc_note(d: Dir) -> str:
         if d.path not in doc_cache:
             doc_cache[d.path] = docs(d.path)
-        return f"  [{', '.join(doc_cache[d.path])}]" if doc_cache[d.path] else ""
+        docs_note = f"  [{', '.join(doc_cache[d.path])}]" if doc_cache[d.path] else ""
+        return docs_note + annotation(areas.entries.get(d.path))
 
     def summary(d: Dir) -> str:
         langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
@@ -122,7 +125,8 @@ def render_outline(
                 walk(sub, depth + 1)
             for f in d.files[:files_per_dir]:
                 names = ", ".join(top_names(files[f].defs, settings.defs_per_file))
-                lines.append(f"{indent}  {f.rsplit('/', 1)[-1]} {pct(files[f].rank)}" + (f": {names}" if names else ""))
+                lines.append(f"{indent}  {f.rsplit('/', 1)[-1]} {pct(files[f].rank)}" + (f": {names}" if names else "")
+                             + annotation(areas.entries.get(f)))
             if len(d.files) > files_per_dir:
                 lines.append(f"{indent}  +{len(d.files) - files_per_dir} more files")
 
@@ -158,6 +162,8 @@ def render_outline(
         result = open_dirs | {d.path}
         while len(d.dirs) == 1 and not d.files:
             d = next(iter(d.dirs.values()))
+            if areas.resolve(d.path).fold:
+                break
             result.add(d.path)
         return result
 
@@ -178,7 +184,7 @@ def render_outline(
             for sub in d.dirs.values():
                 if sub.path in open_dirs:
                     yield from visible(sub)
-                elif sub.path not in failed:
+                elif sub.path not in failed and not areas.resolve(sub.path).fold:
                     yield sub
         for cand in sorted(visible(root), key=lambda s: s.rank, reverse=True):
             trial_dirs = opened(open_dirs, cand)
