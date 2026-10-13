@@ -25,7 +25,7 @@ from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 from repomapper.outline import OutlineFile, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, load_config
-from repomapper.areas import Areas, annotation, load_areas
+from repomapper.areas import Area, Areas, annotation, load_areas
 
 
 @dataclass
@@ -627,8 +627,14 @@ class RepoMap:
                 first_line = rendered_lines[0]
                 code_lines = rendered_lines[1:]
                 
+                # Status inherits from folders; notes only from the file's own entry (folder notes stay in the outline)
+                resolved, own = self.areas.resolve(rel_fname), self.areas.entries.get(rel_fname)
+                note = annotation(Area(status=resolved.status, replaced_by=resolved.replaced_by,
+                                       note=own.note if own else None))
+                if note.startswith(" — "):
+                    note = " " + note[3:]  # "file.py: note", the colon already separates it
                 tree_parts.append(
-                    f"{first_line}\n"
+                    f"{first_line}{note}\n"
                     f"(Rank value: {max_rank:.4f})\n\n" # Added an extra newline here
                     + "\n".join(code_lines)
                 )
@@ -698,8 +704,6 @@ class RepoMap:
             
             if not tree_output:
                 return None, 0
-            shown = {tag.rel_fname for _rank, tag in selected_tags} | chat_rel_fnames
-            tree_output = self.area_notes(shown) + tree_output
             
             tokens = self.token_count(tree_output)
             return tree_output, tokens
@@ -720,17 +724,6 @@ class RepoMap:
         
         return best_tree, file_report
     
-    def area_notes(self, rel_fnames: Set[str]) -> str:
-        """Header listing areas.toml status and notes for areas the shown files belong to."""
-        paths = self.areas.covering(rel_fnames)
-        if not paths:
-            return ""
-        lines = ["Area notes from .repomap/areas.toml:"]
-        lines += [f"  {p or '.'}{'' if p in rel_fnames else '/'}{annotation(self.areas.entries[p])}" for p in paths]
-        if any(self.areas.entries[p].status == "deprecated" for p in paths):
-            lines.append("  Don't copy patterns from deprecated areas; look where they're replaced instead.")
-        return "\n".join(lines) + "\n\n"
-
     def get_repo_map(
         self,
         chat_files: List[str] = None,

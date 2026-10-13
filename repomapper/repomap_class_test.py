@@ -189,16 +189,24 @@ def test_core_importance_raises_unseeded_rank(tmp_path):
     assert tilted["alone.ts"] > plain["alone.ts"]
 
 
-def test_seeded_map_starts_with_notes_for_shown_areas(tmp_path):
+def test_seeded_map_annotates_files_but_not_folders(tmp_path):
     files = make_project(tmp_path, {**PROJECT, "old/legacy.ts": "export function oldHelper() { return helper(2); }\n"})
     (tmp_path / ".repomap").mkdir()
     (tmp_path / ".repomap" / "areas.toml").write_text(
-        '[paths."old"]\nstatus = "deprecated"\nreplaced_by = "core.ts"\n[paths."alone.ts"]\nnote = "unused"\n'
+        '[paths."old"]\nstatus = "legacy"\nnote = "folder note"\n'
+        '[paths."core.ts"]\nstatus = "deprecated"\nreplaced_by = "used.ts"\nnote = "old helpers"\n'
     )
     map_string, _ = make_repomap(tmp_path).get_repo_map(chat_files=[files[3]], other_files=files[:3])
 
-    header = map_string.split("\n\n")[0].splitlines()
-    assert header[0] == "Area notes from .repomap/areas.toml:"
-    assert "  old/ [deprecated, replaced by core.ts]" in header
-    assert "  alone.ts — unused" in header
-    assert "Don't copy patterns from deprecated areas" in map_string
+    assert "core.ts: [deprecated, replaced by used.ts] — old helpers\n" in map_string
+    assert "old/legacy.ts: [legacy]\n" in map_string
+    assert "folder note" not in map_string
+
+
+def test_seeded_map_note_without_status_follows_the_colon(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."used.ts"]\nnote = "calls helper"\n')
+    map_string, _ = make_repomap(tmp_path).get_repo_map(chat_files=[files[1]], other_files=files)
+
+    assert "used.ts: calls helper\n" in map_string

@@ -23,3 +23,44 @@
 # [paths."src/old-reports"]
 # status = "deprecated"
 # fold = true
+
+[paths."repomapper"]
+importance = "core"
+note = "The package; tests sit next to modules as *_test.py, run with `uv run pytest -W error::DeprecationWarning`"
+
+[paths."repomapper/repomap_class.py"]
+note = "RepoMap: tag parsing + cache, build_ranking (graph, PageRank), signature map, get_outline; entry point get_repo_map"
+
+[paths."repomapper/outline.py"]
+note = "Pure renderer for the unseeded directory outline (render_outline); no I/O, tested with fake files"
+
+[paths."repomapper/repomap_server.py"]
+note = "MCP server (fastmcp, stdio): repo_map and search_identifiers; project root and .repomap/ init resolved once in main()"
+
+[paths."repomapper/repomap.py"]
+note = "CLI entry point `repomap`; mirrors the server's setup"
+
+[paths."repomapper/config.py"]
+note = "config.toml dataclasses; new keys must also go in CONFIG_TEMPLATE (repomap_dir.py), a test enforces it"
+
+[paths."repomapper/areas.py"]
+note = "areas.toml loading/inheritance, annotations, starter entries and git staleness checks"
+
+[paths."repomapper/repomap_dir.py"]
+note = ".repomap/ init and the areas/config templates; never overwrites existing files"
+
+[paths."repomapper/utils.py"]
+note = "File discovery (git ls-files + .repomap/ignore), generated-file detection, token counting"
+
+[paths."repomapper/importance.py"]
+status = "legacy"
+note = "Aider leftover: filter_important_files is computed but its result is never used"
+
+[paths."repomapper/scm.py"]
+importance = "low"
+note = "Maps language names to queries/*.scm files"
+
+[paths."repomapper/queries"]
+importance = "low"
+fold = true
+note = "Vendored tree-sitter tag queries; language-pack takes precedence over languages"

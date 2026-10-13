@@ -7,7 +7,7 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timezone
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 from repomapper.utils import REPOMAP_DIR
 
@@ -64,16 +64,6 @@ class Areas:
             if getattr(result, f.name) is None:
                 setattr(result, f.name, getattr(DEFAULTS, f.name))
         return result
-
-    def covering(self, paths: Iterable[str]) -> List[str]:
-        """Entry paths that are paths or ancestors of them and carry a status or note, sorted."""
-        found = set()
-        for path in paths:
-            for p in ancestors(path):
-                entry = self.entries.get(p)
-                if entry and (entry.status or entry.note or entry.replaced_by):
-                    found.add(p)
-        return sorted(found)
 
 
 def annotation(entry: Optional[Area]) -> str:

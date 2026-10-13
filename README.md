@@ -290,8 +290,8 @@ replaced_by = "src/api"
 fold = true                    # always one line in the outline
 ```
 
-Status, `replaced_by` and notes show on outline lines, and at the top of signature maps that include files in
-that area. The nearest entry wins per key, so a child entry only overrides the keys it sets. Unknown keys or
+Status, `replaced_by` and notes show on outline lines. Signature maps show them next to each file's name: status and
+`replaced_by` inherited from folders, notes only from the file's own entry. The nearest entry wins per key, so a child entry only overrides the keys it sets. Unknown keys or
 values and paths that don't exist are reported like config problems.
 
 When it's first created, `areas.toml` also lists the project's top-level directories (and the subdirectories of

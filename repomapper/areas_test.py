@@ -55,12 +55,6 @@ def test_annotation_shows_status_replacement_and_note():
     assert annotation(Area(importance="core")) == ""
 
 
-def test_covering_lists_entries_over_the_given_files():
-    areas = Areas({"maps": Area(status="legacy"), "src": Area(importance="core"), "ui": Area(note="x")})
-
-    assert areas.covering(["maps/a.py", "src/b.py"]) == ["maps"]
-
-
 def git(root, *args, date=None):
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@t"}
