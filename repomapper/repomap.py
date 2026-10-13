@@ -150,7 +150,7 @@ Examples:
     # and collect all file paths. find_src_files handles both files and directories.
     effective_other_files_unresolved = []
     for path_spec_str in unresolved_paths_for_other_files_specs:
-        effective_other_files_unresolved.extend(find_src_files(path_spec_str))
+        effective_other_files_unresolved.extend(find_src_files(path_spec_str, ignore_root=args.root))
     
     # Convert to absolute paths
     root_path = Path(args.root).resolve()

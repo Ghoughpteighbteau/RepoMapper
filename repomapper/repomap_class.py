@@ -43,14 +43,6 @@ SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
 Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 
 
-MINIFIED_AVG_LINE_LENGTH = 300
-
-
-def is_minified(code: str) -> bool:
-    """Heuristic for minified/bundled files, which bloat maps and search context."""
-    return len(code) / (code.count("\n") + 1) > MINIFIED_AVG_LINE_LENGTH
-
-
 def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str]) -> float:
     """Edge weight multiplier for an identifier, following aider's repo-map heuristics."""
     mul = 1.0
@@ -249,7 +241,7 @@ class RepoMap:
             return []
         
         code = self.read_text_func_internal(fname)
-        if not code or is_minified(code):
+        if not code:
             return []
         
         try:

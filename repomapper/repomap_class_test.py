@@ -82,13 +82,6 @@ def test_backfilled_refs_have_line_numbers(tmp_path):
     assert [t.line for t in tags if t.kind == "ref" and t.name == "foo"] == [1, 3]
 
 
-def test_skips_minified_files(tmp_path):
-    body = ";".join(f"function f{i}(a){{return a}}" for i in range(200))
-    (tmp_path / "lib-min.js").write_text(body + "\n")
-
-    assert make_repomap(tmp_path).get_tags(str(tmp_path / "lib-min.js"), "lib-min.js") == []
-
-
 def test_finds_call_refs_in_files_with_type_refs(tmp_path):
     source = "import { interleave } from './u';\nexport function run(x: Thing) {\n  return interleave(x);\n}\n"
     (tmp_path / "a.ts").write_text(source)

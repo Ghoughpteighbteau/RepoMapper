@@ -24,3 +24,19 @@ def test_search_context_lines_are_capped(tmp_path):
 
     assert results and results[0]["line"] == 1
     assert all(len(line) <= repomap_server.MAX_CONTEXT_LINE_LENGTH for r in results for line in r["context"].splitlines())
+
+
+def test_search_suggests_repomapignore(tmp_path):
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n")
+
+    assert ".repomapignore" in search(project_root=str(tmp_path), query="interleave")["hint"]
+
+
+def test_search_respects_repomapignore(tmp_path):
+    (tmp_path / ".repomapignore").write_text("bundle.js\n")
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n")
+    (tmp_path / "bundle.js").write_text("function interleave() {}\n")
+
+    files = {r["file"] for r in search(project_root=str(tmp_path), query="interleave")["results"]}
+
+    assert files == {"a.ts"}

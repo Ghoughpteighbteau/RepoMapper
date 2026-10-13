@@ -7,3 +7,4 @@ pygments>=2.14.0
 fastmcp
 numpy
 scipy
+pathspec

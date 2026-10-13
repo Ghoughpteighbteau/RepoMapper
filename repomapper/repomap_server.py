@@ -38,6 +38,12 @@ settings.stateless_http = True
 # Create MCP server
 mcp = FastMCP("RepoMapServer")
 
+IGNORE_HINT = (
+    "If results include vendored, minified, bundled or generated files that aren't useful, "
+    "suggest the user add gitignore-style patterns for them to .repomapignore in the project root."
+)
+
+
 @mcp.tool()
 async def repo_map(
     project_root: str,
@@ -54,6 +60,9 @@ async def repo_map(
     """Generate a repository map for the specified files, providing a list of function prototypes and variables for files as well as relevant related
     files. Provide filenames relative to the project_root. In addition to the files provided, relevant related files will also be included with a
     very small ranking boost.
+
+    Files matching .gitignore or .repomapignore (gitignore syntax, in project_root) are skipped. If the map is
+    dominated by vendored, minified, bundled or generated files, suggest adding them to .repomapignore.
 
     :param project_root: Root directory of the project to search.  (must be an absolute path!)
     :param chat_files: A list of file paths that are currently in the chat context. These files will receive the highest ranking.
@@ -156,7 +165,8 @@ async def repo_map(
         
         return {
             "map": map_content or "No repository map could be generated.",
-            "report": report_dict
+            "report": report_dict,
+            "hint": IGNORE_HINT,
         }
     except Exception as e:
         log.exception(f"Error generating repository map for project '{project_root}': {e}")
@@ -184,7 +194,8 @@ async def search_identifiers(
 ) -> Dict[str, Any]:
     """Search for identifiers in code files. Get back a list of matching identifiers with their file, line number, and context.
        When searching, just use the identifier name without any special characters, prefixes or suffixes. The search is 
-       case-insensitive.
+       case-insensitive. Files matching .gitignore or .repomapignore are skipped; if hits come from vendored,
+       minified or generated files, suggest adding them to .repomapignore.
 
     Args:
         project_root: Root directory of the project to search.  (must be an absolute path!)
@@ -263,7 +274,7 @@ async def search_identifiers(
                     "context": context
                 })
 
-        return {"results": results}
+        return {"results": results, "hint": IGNORE_HINT}
 
     except Exception as e:
         log.exception(f"Error searching identifiers in project '{project_root}': {e}")

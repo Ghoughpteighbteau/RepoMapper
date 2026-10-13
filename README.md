@@ -256,6 +256,21 @@ This implementation is based on the RepoMap design from the Aider project.
 
 ----------
 
+## Ignoring files
+
+Files ignored by git are skipped automatically. To also hide files that are committed but not useful in a map
+(vendored libraries, minified or bundled output, generated code), add a `.repomapignore` to the project root.
+It uses `.gitignore` syntax:
+
+```gitignore
+# rollup bundle of the MCP server
+utils/mcp/server.js
+**/vendor/
+*.min.js
+```
+
+The MCP tools remind agents of this file, so they can suggest entries when results look noisy.
+
 ## Running as an MCP Server
 
 RepoMap can also be run as an MCP (Model Context Protocol) server, allowing other applications to access its repository mapping capabilities.

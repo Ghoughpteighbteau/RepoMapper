@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Optional, List
 from collections import namedtuple
 
+import pathspec
+
 try:
     import tiktoken
 except ImportError:
@@ -84,20 +86,41 @@ def _git_files(directory: str) -> Optional[List[str]]:
     return files
 
 
-def find_src_files(directory: str) -> List[str]:
-    """Find source files in a directory, skipping files ignored by git."""
+IGNORE_FILE = ".repomapignore"
+
+
+def load_ignore_spec(root: str) -> Optional[pathspec.GitIgnoreSpec]:
+    """Load gitignore-style patterns from root/.repomapignore, if present."""
+    try:
+        with open(os.path.join(root, IGNORE_FILE), encoding="utf-8") as f:
+            return pathspec.GitIgnoreSpec.from_lines(f)
+    except FileNotFoundError:
+        return None
+
+
+def find_src_files(directory: str, ignore_root: Optional[str] = None) -> List[str]:
+    """Find source files in a directory, skipping files ignored by git or .repomapignore.
+
+    Patterns in .repomapignore are relative to ignore_root (defaults to directory).
+    """
     if not os.path.isdir(directory):
         return [directory] if os.path.isfile(directory) else []
 
-    git_files = _git_files(directory)
-    if git_files is not None:
-        return git_files
+    src_files = _git_files(directory)
+    if src_files is None:
+        src_files = []
+        for root, dirs, files in os.walk(directory):
+            # Skip hidden directories and common non-source directories
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in SKIP_DIRS]
+            for file in files:
+                if not file.startswith('.'):
+                    src_files.append(os.path.join(root, file))
 
-    src_files = []
-    for root, dirs, files in os.walk(directory):
-        # Skip hidden directories and common non-source directories
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in SKIP_DIRS]
-        for file in files:
-            if not file.startswith('.'):
-                src_files.append(os.path.join(root, file))
+    ignore_root = ignore_root or directory
+    spec = load_ignore_spec(ignore_root)
+    if spec:
+        src_files = [
+            f for f in src_files
+            if not spec.match_file(os.path.relpath(f, ignore_root).replace(os.sep, "/"))
+        ]
     return src_files
