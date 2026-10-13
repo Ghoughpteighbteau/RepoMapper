@@ -28,7 +28,7 @@ from repomapper.repomap_dir import CACHE_DIR
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 from repomapper.outline import OutlineFile, render_outline
-from repomapper.config import Config, IdentifierWeightConfig, load_config
+from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
 from repomapper.history import History, activity_factors, read_history
 
@@ -56,6 +56,7 @@ class Ranking:
     mentioned_idents: Set[str]
     chat_rel_fnames: Set[str]
     nested: Dict[str, Set[str]] = field(default_factory=dict)  # rel_fname -> names only defined inside functions
+    types: Dict[str, Set[str]] = field(default_factory=dict)   # rel_fname -> names of classes, interfaces, types, enums
 
 
 
@@ -95,6 +96,9 @@ Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 
 # Nested definitions also get a tag of kind "nested", so the outline can skip local helpers as sample names
 # while ranking still links to them (code wrapped in an IIFE or a factory function is all nested).
+# Class-like definitions (class, interface, type, enum...) also get a tag of kind "type", so the outline prefers them
+# as sample names over methods and fields.
+TYPE_DEFINITION_KINDS = ("class", "type", "interface", "enum", "union", "object", "mixin", "alias")
 FUNCTION_NODE_WORDS = ("function", "method", "lambda", "closure")
 
 
@@ -106,23 +110,6 @@ def is_nested(name_node) -> bool:
             return True
         node = node.parent
     return False
-
-
-def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str],
-                      weights: IdentifierWeightConfig = IdentifierWeightConfig()) -> float:
-    """Edge weight multiplier for an identifier, following aider's repo-map heuristics."""
-    mul = 1.0
-    is_snake = "_" in name and any(c.isalpha() for c in name)
-    is_camel = any(c.isupper() for c in name) and any(c.islower() for c in name)
-    if name in mentioned_idents:
-        mul *= weights.mentioned
-    if (is_snake or is_camel) and len(name) >= weights.specific_min_length:
-        mul *= weights.specific
-    if name.startswith("_"):
-        mul *= weights.private
-    if num_definers > weights.common_definers:
-        mul *= weights.common
-    return mul
 
 
 def language_families(families: List[List[str]]) -> Callable[[str], str]:
@@ -361,6 +348,7 @@ class RepoMap:
                 for node in nodes:
                     if "name.definition" in capture_name:
                         kind = "def"
+                        is_type = capture_name.rsplit(".", 1)[-1] in TYPE_DEFINITION_KINDS
                     elif "name.reference" in capture_name:
                         kind = "ref"
                     else:
@@ -380,6 +368,8 @@ class RepoMap:
                     ))
                     if kind == "def" and is_nested(node):
                         tags.append(Tag(rel_fname=rel_fname, fname=fname, line=line_num, name=name, kind="nested"))
+                    if kind == "def" and is_type:
+                        tags.append(Tag(rel_fname=rel_fname, fname=fname, line=line_num, name=name, kind="type"))
 
             # Many query files capture few or no references (e.g. TypeScript only
             # captures type annotations, not calls). Merge in pygments name tokens
@@ -490,6 +480,7 @@ class RepoMap:
         references = defaultdict(Counter)
         definitions = defaultdict(set)
         nested: Dict[str, Counter] = defaultdict(Counter)
+        types: Dict[str, Set[str]] = defaultdict(set)
         def_counts: Counter = Counter()
         
         personalization = {}
@@ -522,6 +513,8 @@ class RepoMap:
                     total_references += 1
                 elif tag.kind == "nested":
                     nested[rel_fname][tag.name] += 1
+                elif tag.kind == "type":
+                    types[rel_fname].add(tag.name)
             
             # Seed PageRank from chat files and, more weakly, mentioned files
             if fname in chat_fnames:
@@ -623,7 +616,7 @@ class RepoMap:
         nested = {rel: {name for name, n in counts.items() if n == def_counts[(rel, name)]}
                   for rel, counts in nested.items()}
         return Ranking(G, ranks, ident_ranks, included, definitions, file_report, mentioned_fnames,
-                       mentioned_idents, chat_rel_fnames, nested)
+                       mentioned_idents, chat_rel_fnames, nested, dict(types))
 
     def get_outline(self, other_fnames: List[str], max_tokens: int,
                     force_refresh: bool = False) -> Tuple[Optional[str], FileReport]:
@@ -643,7 +636,8 @@ class RepoMap:
                  for name in ranking.definitions.get(rel_fname, ()) if name not in nested),
                 reverse=True,
             )
-            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs)
+            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs,
+                                           ranking.types.get(rel_fname, set()))
 
         # Shares of the shown files: unparseable nodes (queries, docs) would otherwise hold most of the rank
         total_rank = sum(f.rank for f in files.values()) or 1.0
@@ -668,7 +662,8 @@ class RepoMap:
         ranking_config = self.config.ranking
         importance = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
         return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
-                              activity, importance, recent_commits), ranking.report
+                              activity, importance, recent_commits,
+                              ranking_config.identifier_weight), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""

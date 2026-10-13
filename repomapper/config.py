@@ -3,7 +3,7 @@ import dataclasses
 import os
 import tomllib
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, Set
 
 from repomapper.utils import REPOMAP_DIR
 
@@ -30,6 +30,23 @@ class IdentifierWeightConfig:
     private: float = 0.1
     common: float = 0.1
     common_definers: int = 5
+
+
+def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str],
+                      weights: IdentifierWeightConfig = IdentifierWeightConfig()) -> float:
+    """Edge weight multiplier for an identifier, following aider's repo-map heuristics."""
+    mul = 1.0
+    is_snake = "_" in name and any(c.isalpha() for c in name)
+    is_camel = any(c.isupper() for c in name) and any(c.islower() for c in name)
+    if name in mentioned_idents:
+        mul *= weights.mentioned
+    if (is_snake or is_camel) and len(name) >= weights.specific_min_length:
+        mul *= weights.specific
+    if name.startswith("_"):
+        mul *= weights.private
+    if num_definers > weights.common_definers:
+        mul *= weights.common
+    return mul
 
 
 @dataclass
@@ -59,6 +76,9 @@ class OutlineConfig:
     max_langs: int = 3
     max_edges: int = 12
     common_name_dirs: int = 5
+    type_boost: float = 3.0           # sample score multiplier for classes, interfaces, types and enums
+    short_name_length: int = 6        # names shorter than this get short_name_penalty as samples
+    short_name_penalty: float = 0.3
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
     generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"])
 

@@ -1,5 +1,5 @@
 from repomapper.areas import Area, Areas
-from repomapper.config import OutlineConfig
+from repomapper.config import IdentifierWeightConfig, OutlineConfig
 from repomapper.outline import HEADER, OutlineFile, render_outline
 from repomapper.utils import count_tokens
 
@@ -19,7 +19,7 @@ EDGES = {("ui/app.ts", "lib/types/user.ts"): 3.0, ("ui/app.ts", "lib/types/task.
 
 def test_small_budget_folds_directories_to_one_line():
     out = render_outline(FILES, EDGES, 167, tokens)
-    assert "lib/types/  2 files (ts 2) 70.0%: User, Task, UserId" in out
+    assert "lib/types/  2 files (ts 2) 70.0%: User, UserId, Task" in out
     assert "user.ts" not in out
     assert "ui/ -> lib/types/" in out
 
@@ -297,7 +297,32 @@ def test_generic_builtin_names_are_not_samples():
     out = render_outline(files, {}, 10_000, tokens)
     assert "queue.ts 100.0%: JobQueue\n" in out or out.endswith("queue.ts 100.0%: JobQueue")
     kept = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(generic_names=[]))
-    assert "queue.ts 100.0%: push, set, JobQueue, id" in kept
+    assert "queue.ts 100.0%: JobQueue, push, set, id" in kept
+
+
+def test_type_names_are_sampled_before_higher_ranked_methods():
+    files = {"lib/queue.ts": OutlineFile(1.0, [(0.5, "enqueueAll"), (0.4, "dequeueOne"), (0.2, "JobQueue")], {"JobQueue"})}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "queue.ts 100.0%: JobQueue, " in out
+    flat = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(type_boost=1.0))
+    assert "queue.ts 100.0%: enqueueAll, dequeueOne, JobQueue" in flat
+
+
+def test_short_names_are_sampled_after_longer_ones():
+    files = {"lib/q.ts": OutlineFile(1.0, [(0.5, "item"), (0.4, "Worker"), (0.3, "Pending")])}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "q.ts 100.0%: Worker, Pending, item" in out
+    off = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(short_name_penalty=1.0))
+    assert "q.ts 100.0%: item, Worker, Pending" in off
+
+
+def test_names_defined_in_many_files_rank_lower_as_samples():
+    files = {f"d/f{i}.ts": OutlineFile(0.1, [(0.09, "renderRow"), (0.05, f"Widget{i}")]) for i in range(3)}
+    weights = IdentifierWeightConfig(common_definers=2, common=0.1)
+    out = render_outline(files, {}, 10_000, tokens, weights=weights)
+    assert "f0.ts 10.0%: Widget0, renderRow" in out
+    loose = render_outline(files, {}, 10_000, tokens, weights=IdentifierWeightConfig(common_definers=5))
+    assert "f0.ts 10.0%: renderRow, Widget0" in loose
 
 
 def test_rank_below_a_tenth_of_a_percent_is_hidden():

@@ -22,7 +22,9 @@ Edges touching files areas.toml marks legacy or deprecated are dropped (both dir
 
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
 but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
-minified files (definitions mostly single letters), and generic names (push, set, id) from config.
+minified files (definitions mostly single letters), and generic names (push, set, id) from config. The rest are
+ordered by rank times ranking's identifier weight (names defined in many files down), a boost for classes,
+interfaces and types, and a penalty for short names.
 
 Lines below MIN_SHOWN_RANK of the PageRank show no percentage. Git activity shows on directory lines, and
 on file lines only for hot files (HOT_FILE_COMMITS in the last 90 days).
@@ -36,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from repomapper.areas import Areas, annotation
-from repomapper.config import OutlineConfig
+from repomapper.config import IdentifierWeightConfig, OutlineConfig, identifier_weight
 from repomapper.utils import mostly_single_letters
 
 IMPORTANCE_WEIGHTS = {"core": 4.0, "normal": 1.0, "low": 0.25}   # areas.toml importance -> share multiplier
@@ -59,6 +61,7 @@ HEADER = (
 class OutlineFile:
     rank: float                       # File PageRank
     defs: List[Tuple[float, str]]     # (rank, def name), highest first; all of them, samples are picked here
+    types: Set[str] = field(default_factory=set)   # def names that are classes, interfaces, types or enums
 
 
 @dataclass
@@ -137,22 +140,38 @@ def top_names(defs: List[Tuple[float, str]], n: int) -> List[str]:
     return names
 
 
-def sample_defs(files: Dict[str, OutlineFile], kinds: Dict[str, str], settings: OutlineConfig) -> Dict[str, OutlineFile]:
-    """files with defs cut to their sample names: none for test/config kinds and minified files, and no
-    names defined in more than common_name_dirs directories or listed in generic_names."""
+def sample_score(rank: float, name: str, is_type: bool, definers: int, settings: OutlineConfig,
+                 weights: IdentifierWeightConfig) -> float:
+    """A definition's rank adjusted for sampling: ranking's identifier weight (specific names up, names defined
+    in many files down), classes and types up, short names down."""
+    score = rank * identifier_weight(name, definers, set(), weights)
+    if is_type:
+        score *= settings.type_boost
+    if len(name) < settings.short_name_length:
+        score *= settings.short_name_penalty
+    return score
+
+
+def sample_defs(files: Dict[str, OutlineFile], kinds: Dict[str, str], settings: OutlineConfig,
+                weights: IdentifierWeightConfig = IdentifierWeightConfig()) -> Dict[str, OutlineFile]:
+    """files with defs cut to their sample names, best first by sample_score: none for test/config kinds and
+    minified files, and no names defined in more than common_name_dirs directories or listed in generic_names."""
     dirs_of: Dict[str, Set[str]] = defaultdict(set)
+    files_of: Counter = Counter()
     for rel, f in files.items():
         if rel not in kinds:
             for _rank, name in f.defs:
                 dirs_of[name].add(posixpath.dirname(rel))
+                files_of[name] += 1
     generic = set(settings.generic_names)
     out = {}
     for rel, f in files.items():
         names = [name for _rank, name in f.defs]
-        keep = [] if rel in kinds or mostly_single_letters(names) else [
-            (rank, name) for rank, name in f.defs
-            if len(dirs_of[name]) <= settings.common_name_dirs and name not in generic]
-        out[rel] = OutlineFile(f.rank, keep[:settings.defs_per_file])
+        keep = [] if rel in kinds or mostly_single_letters(names) else sorted(
+            ((sample_score(rank, name, name in f.types, files_of[name], settings, weights), name) for rank, name in f.defs
+             if len(dirs_of[name]) <= settings.common_name_dirs and name not in generic),
+            key=lambda pair: -pair[0])   # stable: ties keep rank order
+        out[rel] = OutlineFile(f.rank, keep[:settings.defs_per_file], f.types)
     return out
 
 
@@ -172,13 +191,14 @@ def render_outline(
     activity: Callable[[str], Optional[str]] = lambda path: None,
     importance: Dict[str, float] = IMPORTANCE_WEIGHTS,
     recent_commits: Callable[[str], Optional[int]] = lambda path: 0,
+    weights: IdentifierWeightConfig = IdentifierWeightConfig(),
 ) -> Optional[str]:
     """Render the outline, splitting max_tokens top-down among directories by size and importance."""
     if not files:
         return None
     files_per_dir, max_edges = settings.files_per_dir, settings.max_edges
     kinds = {rel: kind for rel in files if (kind := areas.resolve(rel).kind)}
-    files = sample_defs(files, kinds, settings)
+    files = sample_defs(files, kinds, settings, weights)
     root = build_tree(files, kinds)
     doc_cache: Dict[str, List[str]] = {}
 

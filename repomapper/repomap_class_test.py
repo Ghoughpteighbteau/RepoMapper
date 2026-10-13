@@ -315,6 +315,27 @@ def test_nested_helpers_are_not_outline_samples(tmp_path):
     assert {"run_all", "visit"} <= set(samples)
 
 
+def test_class_like_definitions_get_a_type_tag(tmp_path):
+    files = make_project(tmp_path, {
+        "shapes.ts": "export interface Shape { area(): number }\nexport type Id = string;\n"
+                     "export enum Color { Red }\nexport class Circle { radius = 1; grow() {} }\n"
+                     "export function make() { return 1 }\n",
+    })
+    tags = make_repomap(tmp_path).get_tags(files[0], "shapes.ts")
+    assert {t.name for t in tags if t.kind == "type"} == {"Shape", "Id", "Color", "Circle"}
+    assert {"area", "grow", "make"} <= {t.name for t in tags if t.kind == "def"}
+
+
+def test_outline_samples_prefer_types_over_methods(tmp_path):
+    files = make_project(tmp_path, {
+        "shapes.ts": "export class Circle { grow() {} shrink() {} }\n",
+        "user.ts": "const c = new Circle();\nc.grow();\nc.grow();\nc.grow();\nc.shrink();\nc.shrink();\n",
+    })
+    out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
+    samples = out.split("shapes.ts ")[1].split("\n")[0].split(": ")[1].split(", ")
+    assert samples[0] == "Circle"
+
+
 def test_outline_demotes_test_files_from_areas_globs(tmp_path):
     files = make_project(tmp_path, {
         "core.py": "def helper():\n    return 1\n",
