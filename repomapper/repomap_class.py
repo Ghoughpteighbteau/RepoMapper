@@ -19,9 +19,10 @@ from grep_ast import TreeContext
 from pygments.lexers import guess_lexer_for_filename
 from pygments.token import Token
 from pygments.util import ClassNotFound
-from repomapper.utils import count_tokens, read_text, find_git_root, Tag
+from repomapper.utils import count_tokens, read_text, find_git_root, is_parseable, Tag
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
+from repomapper.outline import OUTLINE_DEFS, OutlineFile, render_outline
 
 
 @dataclass
@@ -31,6 +32,19 @@ class FileReport:
     reference_matches: int          # Total reference tags
     total_files_considered: int     # Total files provided as input
     parse_errors: Dict[str, str] = field(default_factory=dict)  # File -> error, for files that failed to parse
+
+
+@dataclass
+class Ranking:
+    graph: Optional[nx.MultiDiGraph]                 # File reference graph; None when nothing was ranked
+    file_ranks: Dict[str, float]                     # rel_fname -> PageRank
+    ident_ranks: Dict[Tuple[str, str], float]        # (rel_fname, def name) -> rank
+    included: List[str]                              # Absolute paths that were parsed
+    definitions: Dict[str, Set[str]]                 # rel_fname -> def names
+    report: FileReport
+    mentioned_fnames: Set[str]
+    mentioned_idents: Set[str]
+    chat_rel_fnames: Set[str]
 
 
 
@@ -324,19 +338,61 @@ class RepoMap:
         force_refresh: bool = False
     ) -> Tuple[List[Tuple[float, Tag]], FileReport]:
         """Get ranked tags using PageRank algorithm with file report."""
-        # Return empty list and empty report if no files
-        if not chat_fnames and not other_fnames:
-            return [], FileReport({}, 0, 0, 0)
-            
-        # Initialize file report early
-        included: List[str] = []
-        excluded: Dict[str, str] = {}
-        total_definitions = 0
-        total_references = 0
+        ranking = self.build_ranking(chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh)
+        if ranking.graph is None:
+            return [], ranking.report
+        ranks, ident_ranks = ranking.file_ranks, ranking.ident_ranks
+        mentioned_fnames, mentioned_idents = ranking.mentioned_fnames, ranking.mentioned_idents
+        chat_rel_fnames = ranking.chat_rel_fnames
+
+        # Collect and rank tags
+        ranked_tags = []
+
+        for fname in ranking.included:
+            rel_fname = self.get_rel_fname(fname)
+            file_rank = ranks.get(rel_fname, 0.0)
+
+            # Exclude files with low Page Rank if exclude_unranked is True
+            if self.exclude_unranked and file_rank <= 0.0001:  # Use a small threshold to exclude near-zero ranks
+                continue
+
+            tags = self.get_tags(fname, rel_fname)
+            for tag in tags:
+                if tag.kind == "def":
+                    # Boost for mentioned identifiers
+                    boost = 1.0
+                    if tag.name in mentioned_idents:
+                        boost *= 10.0
+                    if rel_fname in mentioned_fnames:
+                        boost *= 5.0
+                    if rel_fname in chat_rel_fnames:
+                        boost *= 20.0
+
+                    # File rank breaks ties between unreferenced definitions
+                    final_rank = (ident_ranks.get((rel_fname, tag.name), 0.0) + file_rank * 1e-3) * boost
+                    ranked_tags.append((final_rank, tag))
+
+        # Sort by rank (descending)
+        ranked_tags.sort(key=lambda x: x[0], reverse=True)
+
+        return ranked_tags, ranking.report
+
+    def build_ranking(
+        self,
+        chat_fnames: List[str],
+        other_fnames: List[str],
+        mentioned_fnames: Optional[Set[str]] = None,
+        mentioned_idents: Optional[Set[str]] = None,
+        force_refresh: bool = False
+    ) -> "Ranking":
+        """Parse files, build the reference graph and run PageRank over it."""
         mentioned_fnames = self.normalize_mentioned_fnames(mentioned_fnames or set())
         if mentioned_idents is None:
             mentioned_idents = set()
-        
+        # Return an empty ranking if no files
+        if not chat_fnames and not other_fnames:
+            return Ranking(None, {}, {}, [], {}, FileReport({}, 0, 0, 0), mentioned_fnames, mentioned_idents, set())
+
         # Normalize paths to absolute
         def normalize_path(path):
             return str(Path(path).resolve())
@@ -412,8 +468,10 @@ class RepoMap:
                         G.add_edge(ref_fname, def_fname, weight=weight, name=name)
         
         if not G.nodes():
-            return [], FileReport(excluded, total_definitions, total_references, len(all_fnames),
-                                  dict(self.parse_errors))
+            report = FileReport(excluded, total_definitions, total_references, len(all_fnames),
+                                dict(self.parse_errors))
+            return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
+                           chat_rel_fnames)
         
         # Run PageRank
         try:
@@ -449,38 +507,47 @@ class RepoMap:
             for _, dst, data in out_edges:
                 ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
 
-        # Collect and rank tags
-        ranked_tags = []
-        
-        for fname in included:
-            rel_fname = self.get_rel_fname(fname)
-            file_rank = ranks.get(rel_fname, 0.0)
+        return Ranking(G, ranks, ident_ranks, included, definitions, file_report, mentioned_fnames,
+                       mentioned_idents, chat_rel_fnames)
 
-            # Exclude files with low Page Rank if exclude_unranked is True
-            if self.exclude_unranked and file_rank <= 0.0001:  # Use a small threshold to exclude near-zero ranks
+    def get_outline(self, other_fnames: List[str], max_tokens: int,
+                    force_refresh: bool = False) -> Tuple[Optional[str], FileReport]:
+        """Directory outline folded to fit max_tokens, for maps with no context to zoom in on."""
+        ranking = self.build_ranking([], other_fnames, force_refresh=force_refresh)
+        if ranking.graph is None:
+            return None, ranking.report
+
+        files = {}
+        for fname in ranking.included:
+            rel_fname = self.get_rel_fname(fname)
+            if not is_parseable(fname):
                 continue
-            
-            tags = self.get_tags(fname, rel_fname)
-            for tag in tags:
-                if tag.kind == "def":
-                    # Boost for mentioned identifiers
-                    boost = 1.0
-                    if tag.name in mentioned_idents:
-                        boost *= 10.0
-                    if rel_fname in mentioned_fnames:
-                        boost *= 5.0
-                    if rel_fname in chat_rel_fnames:
-                        boost *= 20.0
-                    
-                    # File rank breaks ties between unreferenced definitions
-                    final_rank = (ident_ranks.get((rel_fname, tag.name), 0.0) + file_rank * 1e-3) * boost
-                    ranked_tags.append((final_rank, tag))
-        
-        # Sort by rank (descending)
-        ranked_tags.sort(key=lambda x: x[0], reverse=True)
-        
-        return ranked_tags, file_report
-    
+            defs = sorted(
+                ((ranking.ident_ranks.get((rel_fname, name), 0.0), name)
+                 for name in ranking.definitions.get(rel_fname, ())),
+                reverse=True,
+            )
+            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs[:OUTLINE_DEFS])
+
+        # Shares of the shown files: unparseable nodes (queries, docs) would otherwise hold most of the rank
+        total_rank = sum(f.rank for f in files.values()) or 1.0
+        for f in files.values():
+            f.rank /= total_rank
+
+        edges: Dict[Tuple[str, str], float] = defaultdict(float)
+        for src, dst, data in ranking.graph.edges(data=True):
+            if src in files and dst in files:
+                edges[(src, dst)] += data["weight"]
+
+        def docs(rel_dir: str) -> List[str]:
+            try:
+                names = os.listdir(self.root / rel_dir)
+            except OSError:
+                return []
+            return sorted(n for n in names if n.upper().startswith("README") or n == "CLAUDE.md")
+
+        return render_outline(files, edges, max_tokens, self.token_count, docs), ranking.report
+
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""
         code = self.read_text_func_internal(abs_fname)
@@ -668,11 +735,15 @@ class RepoMap:
             )
         
         try:
-            # get_ranked_tags_map returns (map_string, file_report)
-            map_string, file_report = self.get_ranked_tags_map(
-                chat_files, other_files, max_map_tokens,
-                mentioned_fnames, mentioned_idents, force_refresh
-            )
+            if not chat_files and not mentioned_fnames and not mentioned_idents:
+                # Nothing to zoom in on: show how the repo is organized rather than its most popular utilities
+                map_string, file_report = self.get_outline(other_files, max_map_tokens, force_refresh)
+            else:
+                # get_ranked_tags_map returns (map_string, file_report)
+                map_string, file_report = self.get_ranked_tags_map(
+                    chat_files, other_files, max_map_tokens,
+                    mentioned_fnames, mentioned_idents, force_refresh
+                )
         except RecursionError:
             self.output_handlers['error']("Disabling repo map, git repo too large?")
             self.max_map_tokens = 0
