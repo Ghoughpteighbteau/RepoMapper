@@ -4,6 +4,7 @@ import subprocess
 import pytest
 
 from repomapper import repomap_class, repomap_server
+from repomapper.config import Config
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +27,7 @@ def test_search_context_lines_are_capped(tmp_path):
     results = search(query="interleave")["results"]
 
     assert results and results[0]["line"] == 1
-    assert all(len(line) <= repomap_server.MAX_CONTEXT_LINE_LENGTH for r in results for line in r["context"].splitlines())
+    assert all(len(line) <= Config().search.max_context_line_length for r in results for line in r["context"].splitlines())
 
 
 def test_search_suggests_ignore_file(tmp_path):
@@ -68,3 +69,13 @@ def test_resolve_project_root_uses_git_root_of_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path / "sub")
 
     assert repomap_server.resolve_project_root() == str(tmp_path.resolve())
+
+
+def test_search_reports_config_warnings(tmp_path):
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "config.toml").write_text("[search]\nmax_context_lines = 5\n")
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n")
+
+    assert search(query="interleave")["config_warnings"] == [
+        ".repomap/config.toml: unknown key 'search.max_context_lines'"
+    ]

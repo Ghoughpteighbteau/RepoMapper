@@ -272,6 +272,9 @@ files are missing. Existing files are never overwritten, so your edits stick; de
 
 Commit everything except `cache/` so the team shares the same hints and exclusions.
 
+`config.toml` is read on every run, so edits apply without restarting the MCP server. Unknown keys and values
+of the wrong type are reported (`config_warnings` in MCP responses, warnings in the CLI) and the default is used.
+
 ### Ignoring files
 
 Files ignored by git are skipped automatically. Everything else RepoMapper skips is listed in `.repomap/ignore`,

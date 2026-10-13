@@ -15,6 +15,7 @@ from typing import List
 
 from repomapper.utils import count_tokens, read_text, Tag, find_src_files
 from repomapper.repomap_dir import init_repomap_dir
+from repomapper.config import load_config
 from repomapper.scm import get_scm_fname
 from repomapper.importance import is_important, filter_important_files
 from repomapper.repomap_class import RepoMap
@@ -64,8 +65,7 @@ Examples:
     parser.add_argument(
         "--map-tokens",
         type=int,
-        default=8192,
-        help="Maximum tokens for the generated map (default: 8192)"
+        help="Maximum tokens for the generated map (default: map.token_limit in .repomap/config.toml, 8192)"
     )
     
     parser.add_argument(
@@ -171,15 +171,19 @@ Examples:
     mentioned_idents = set(args.mentioned_idents) if args.mentioned_idents else None
     
     # Create RepoMap instance
+    config = load_config(str(root_path))
+    for warning in config.warnings:
+        tool_warning(warning)
     repo_map = RepoMap(
-        map_tokens=args.map_tokens,
+        map_tokens=args.map_tokens or config.map.token_limit,
         root=str(root_path),
         token_counter_func=token_counter,
         file_reader_func=read_text,
         output_handler_funcs=output_handlers,
         verbose=args.verbose,
         max_context_window=args.max_context_window,
-        exclude_unranked=args.exclude_unranked
+        exclude_unranked=args.exclude_unranked,
+        config=config,
     )
     
     # Generate the map

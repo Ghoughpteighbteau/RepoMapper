@@ -10,10 +10,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-OUTLINE_DEFS = 4       # def names kept per file
-FILES_PER_DIR = 10     # files listed in an open directory before "+N more files"
-MAX_LANGS = 3
-MAX_EDGES = 12
+from repomapper.config import OutlineConfig
+
 DEP_LINE_TOKENS = 20   # budget reserved per dependency line while choosing which directories to open
 
 HEADER = (
@@ -91,10 +89,12 @@ def render_outline(
     max_tokens: int,
     token_count: Callable[[str], int],
     docs: Callable[[str], List[str]] = lambda rel_dir: [],
+    settings: OutlineConfig = OutlineConfig(),
 ) -> Optional[str]:
     """Render the outline, opening the highest-ranked directories while it fits max_tokens."""
     if not files:
         return None
+    files_per_dir, max_edges = settings.files_per_dir, settings.max_edges
     root = build_tree(files)
     doc_cache: Dict[str, List[str]] = {}
 
@@ -104,7 +104,7 @@ def render_outline(
         return f"  [{', '.join(doc_cache[d.path])}]" if doc_cache[d.path] else ""
 
     def summary(d: Dir) -> str:
-        langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(MAX_LANGS))
+        langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
         return f"{d.label}  {d.count} file{'' if d.count == 1 else 's'} ({langs}) {pct(d.rank)}"
 
     def render(open_dirs: Set[str], deps: List[Tuple[str, str]] = ()) -> str:
@@ -113,18 +113,18 @@ def render_outline(
         def walk(d: Dir, depth: int):
             indent = "  " * depth
             if d.path not in open_dirs:
-                names = top_names(d.defs, OUTLINE_DEFS)
+                names = top_names(d.defs, settings.defs_per_file)
                 lines.append(f"{indent}{summary(d)}: {', '.join(names)}{doc_note(d)}" if names
                              else f"{indent}{summary(d)}{doc_note(d)}")
                 return
             lines.append(f"{indent}{summary(d)}{doc_note(d)}")
             for sub in sorted(d.dirs.values(), key=lambda s: s.rank, reverse=True):
                 walk(sub, depth + 1)
-            for f in d.files[:FILES_PER_DIR]:
-                names = ", ".join(top_names(files[f].defs, OUTLINE_DEFS))
+            for f in d.files[:files_per_dir]:
+                names = ", ".join(top_names(files[f].defs, settings.defs_per_file))
                 lines.append(f"{indent}  {f.rsplit('/', 1)[-1]} {pct(files[f].rank)}" + (f": {names}" if names else ""))
-            if len(d.files) > FILES_PER_DIR:
-                lines.append(f"{indent}  +{len(d.files) - FILES_PER_DIR} more files")
+            if len(d.files) > files_per_dir:
+                lines.append(f"{indent}  +{len(d.files) - files_per_dir} more files")
 
         walk(root, 0)
         if deps:
@@ -141,7 +141,7 @@ def render_outline(
             d = d.dirs[part]
         if d.path not in open_dirs:
             return d.path + "/"
-        if rel in d.files[:FILES_PER_DIR]:
+        if rel in d.files[:files_per_dir]:
             return rel
         return d.path + "/" if d.path else "./"
 
@@ -151,7 +151,7 @@ def render_outline(
             a, b = node_of(src, open_dirs), node_of(dst, open_dirs)
             if a != b:
                 weights[(a, b)] += w
-        return [pair for pair, _w in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[:MAX_EDGES]]
+        return [pair for pair, _w in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[:max_edges]]
 
     def opened(open_dirs: Set[str], d: Dir) -> Set[str]:
         # Open chains of single-subdirectory directories together; they'd only add a line each
@@ -170,7 +170,7 @@ def render_outline(
             out = render(open_dirs, deps)
         return out
 
-    tree_budget = max_tokens - min(MAX_EDGES * DEP_LINE_TOKENS, max_tokens // 5)
+    tree_budget = max_tokens - min(max_edges * DEP_LINE_TOKENS, max_tokens // 5)
     open_dirs = opened(set(), root)
     failed: Set[str] = set()
     while True:

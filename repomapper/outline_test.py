@@ -1,3 +1,4 @@
+from repomapper.config import OutlineConfig
 from repomapper.outline import OutlineFile, render_outline
 from repomapper.utils import count_tokens
 
@@ -44,3 +45,11 @@ def test_single_subdirectory_chains_open_together():
 def test_points_to_docs():
     out = render_outline(FILES, EDGES, 120, tokens, docs=lambda d: ["CLAUDE.md"] if d == "ui" else [])
     assert "ui/  1 file (ts 1) 20.0%: App  [CLAUDE.md]" in out
+
+
+def test_settings_limit_names_files_and_edges():
+    settings = OutlineConfig(defs_per_file=1, files_per_dir=1, max_edges=1)
+    out = render_outline(FILES, EDGES, 10_000, tokens, settings=settings)
+    assert "user.ts 50.0%: User\n" in out
+    assert "+1 more files" in out
+    assert out.count(" -> ") == 1

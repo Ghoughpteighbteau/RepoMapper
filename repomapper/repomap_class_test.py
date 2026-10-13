@@ -2,7 +2,8 @@
 import pytest
 
 from repomapper import repomap_class
-from repomapper.repomap_class import RepoMap
+from repomapper.config import IdentifierWeightConfig
+from repomapper.repomap_class import RepoMap, identifier_weight
 from repomapper.utils import count_tokens, read_text
 
 
@@ -171,3 +172,8 @@ def test_unreferenced_defs_in_popular_file_rank_below_used_defs_elsewhere(tmp_pa
     rank = {tag.name: r for r, tag in ranked}
 
     assert rank["popularHelper"] > rank["runService"] > rank["unusedHelper0"]
+
+
+def test_identifier_weight_uses_configured_multipliers():
+    weights = IdentifierWeightConfig(specific=3.0, common=0.5)
+    assert identifier_weight("get_user_name", 6, set(), weights) == 1.5

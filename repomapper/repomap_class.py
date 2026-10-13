@@ -23,7 +23,8 @@ from repomapper.utils import count_tokens, read_text, is_parseable, Tag
 from repomapper.repomap_dir import CACHE_DIR
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
-from repomapper.outline import OUTLINE_DEFS, OutlineFile, render_outline
+from repomapper.outline import OutlineFile, render_outline
+from repomapper.config import Config, IdentifierWeightConfig, load_config
 
 
 @dataclass
@@ -56,27 +57,26 @@ TAGS_CACHE_DIR_DEFAULT = f"{CACHE_DIR}/tags.v{CACHE_VERSION}"
 TAGS_CACHE_DIR = TAGS_CACHE_DIR_DEFAULT  # tests point this elsewhere
 
 # Personalization weights: chat files seed PageRank strongly, mentioned files less so.
-CHAT_FILE_PERSONALIZATION = 100.0
-MENTIONED_FILE_PERSONALIZATION = 10.0
 SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
 
 # Tag namedtuple for storing parsed code definitions and references
 Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 
 
-def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str]) -> float:
+def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str],
+                      weights: IdentifierWeightConfig = IdentifierWeightConfig()) -> float:
     """Edge weight multiplier for an identifier, following aider's repo-map heuristics."""
     mul = 1.0
     is_snake = "_" in name and any(c.isalpha() for c in name)
     is_camel = any(c.isupper() for c in name) and any(c.islower() for c in name)
     if name in mentioned_idents:
-        mul *= 10
-    if (is_snake or is_camel) and len(name) >= 8:
-        mul *= 10
+        mul *= weights.mentioned
+    if (is_snake or is_camel) and len(name) >= weights.specific_min_length:
+        mul *= weights.specific
     if name.startswith("_"):
-        mul *= 0.1
-    if num_definers > 5:
-        mul *= 0.1
+        mul *= weights.private
+    if num_definers > weights.common_definers:
+        mul *= weights.common
     return mul
 
 
@@ -95,12 +95,14 @@ class RepoMap:
         max_context_window: Optional[int] = None,
         map_mul_no_files: int = 8,
         refresh: str = "auto",
-        exclude_unranked: bool = False
+        exclude_unranked: bool = False,
+        config: Optional[Config] = None,
     ):
-        """Initialize RepoMap instance."""
+        """Initialize RepoMap instance. config defaults to root/.repomap/config.toml."""
         self.map_tokens = map_tokens
         self.max_map_tokens = map_tokens
         self.root = Path(root or os.getcwd()).resolve()
+        self.config = config or load_config(str(self.root))
         self.token_count_func_internal = token_counter_func
         self.read_text_func_internal = file_reader_func
         self.repo_content_prefix = repo_content_prefix
@@ -345,6 +347,7 @@ class RepoMap:
         ranks, ident_ranks = ranking.file_ranks, ranking.ident_ranks
         mentioned_fnames, mentioned_idents = ranking.mentioned_fnames, ranking.mentioned_idents
         chat_rel_fnames = ranking.chat_rel_fnames
+        def_boost = self.config.ranking.definition_boost
 
         # Collect and rank tags
         ranked_tags = []
@@ -363,11 +366,11 @@ class RepoMap:
                     # Boost for mentioned identifiers
                     boost = 1.0
                     if tag.name in mentioned_idents:
-                        boost *= 10.0
+                        boost *= def_boost.mentioned_ident
                     if rel_fname in mentioned_fnames:
-                        boost *= 5.0
+                        boost *= def_boost.mentioned_file
                     if rel_fname in chat_rel_fnames:
-                        boost *= 20.0
+                        boost *= def_boost.chat_file
 
                     # File rank breaks ties between unreferenced definitions
                     final_rank = (ident_ranks.get((rel_fname, tag.name), 0.0) + file_rank * 1e-3) * boost
@@ -387,6 +390,7 @@ class RepoMap:
         force_refresh: bool = False
     ) -> "Ranking":
         """Parse files, build the reference graph and run PageRank over it."""
+        ranking_config = self.config.ranking
         mentioned_fnames = self.normalize_mentioned_fnames(mentioned_fnames or set())
         if mentioned_idents is None:
             mentioned_idents = set()
@@ -442,9 +446,9 @@ class RepoMap:
             
             # Seed PageRank from chat files and, more weakly, mentioned files
             if fname in chat_fnames:
-                personalization[rel_fname] = CHAT_FILE_PERSONALIZATION
+                personalization[rel_fname] = ranking_config.chat_file_personalization
             elif rel_fname in mentioned_fnames:
-                personalization[rel_fname] = MENTIONED_FILE_PERSONALIZATION
+                personalization[rel_fname] = ranking_config.mentioned_file_personalization
         
         # Build graph
         G = nx.MultiDiGraph()
@@ -459,11 +463,11 @@ class RepoMap:
             def_fnames = defines.get(name, set())
             if not def_fnames:
                 continue
-            mul = identifier_weight(name, len(def_fnames), mentioned_idents)
+            mul = identifier_weight(name, len(def_fnames), mentioned_idents, ranking_config.identifier_weight)
             for ref_fname, count in ref_counts.items():
                 weight = mul * math.sqrt(count)
                 if ref_fname in chat_rel_fnames:
-                    weight *= 50
+                    weight *= ranking_config.chat_file_ref_weight
                 for def_fname in def_fnames:
                     if ref_fname != def_fname:
                         G.add_edge(ref_fname, def_fname, weight=weight, name=name)
@@ -477,7 +481,8 @@ class RepoMap:
         # Run PageRank
         try:
             # Without seeds, plain PageRank still ranks files by how much the repo references them
-            ranks = nx.pagerank(G, personalization=personalization or None, alpha=0.85)
+            ranks = nx.pagerank(G, personalization=personalization or None,
+                                 alpha=ranking_config.pagerank_alpha)
         except ZeroDivisionError:
             # Fallback to uniform ranking
             ranks = {node: 1.0 for node in G.nodes()}
@@ -528,7 +533,7 @@ class RepoMap:
                  for name in ranking.definitions.get(rel_fname, ())),
                 reverse=True,
             )
-            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs[:OUTLINE_DEFS])
+            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs[:self.config.outline.defs_per_file])
 
         # Shares of the shown files: unparseable nodes (queries, docs) would otherwise hold most of the rank
         total_rank = sum(f.rank for f in files.values()) or 1.0
@@ -547,7 +552,7 @@ class RepoMap:
                 return []
             return sorted(n for n in names if n.upper().startswith("README") or n == "CLAUDE.md")
 
-        return render_outline(files, edges, max_tokens, self.token_count, docs), ranking.report
+        return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""

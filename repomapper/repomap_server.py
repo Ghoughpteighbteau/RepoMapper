@@ -11,6 +11,7 @@ from fastmcp import FastMCP, settings
 from repomapper.repomap_class import RepoMap
 from repomapper.utils import count_tokens, read_text, find_src_files, find_git_root
 from repomapper.repomap_dir import init_repomap_dir
+from repomapper.config import load_config
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -100,7 +101,7 @@ PROJECT_ROOT = resolve_project_root()
 async def repo_map(
     chat_files: Optional[List[str]] = None,
     other_files: Optional[List[str]] = None,
-    token_limit: Any = 8192,  # Accept any type to handle empty strings
+    token_limit: Any = None,  # Accept any type to handle empty strings
     exclude_unranked: bool = False,
     force_refresh: bool = False,
     mentioned_files: Optional[List[str]] = None,
@@ -117,7 +118,7 @@ async def repo_map(
 
     :param chat_files: A list of file paths that are currently in the chat context. These files will receive the highest ranking.
     :param other_files: A list of other relevant file paths in the repository to consider for the map. They receive a lower ranking boost than mentioned_files and chat_files.
-    :param token_limit: The maximum number of tokens the generated repository map should occupy. Defaults to 8192.
+    :param token_limit: The maximum number of tokens the generated repository map should occupy. Defaults to map.token_limit in .repomap/config.toml (8192).
     :param exclude_unranked: If True, files with a PageRank of 0.0 will be excluded from the map. Defaults to False.
     :param force_refresh: If True, forces a refresh of the repository map cache. Defaults to False.
     :param mentioned_files: Optional list of file paths explicitly mentioned in the conversation and receive a mid-level ranking boost.
@@ -133,23 +134,23 @@ async def repo_map(
             - 'reference_matches': count of matched references
             - 'total_files_considered': total files processed
             - 'parse_errors' (only if any): count of files that failed to parse and a few example errors
+        - 'config_warnings' (only if any): problems in .repomap/config.toml; tell the user
         Or an 'error' key if an error occurred.
     """
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
+    config = load_config(project_root)
 
     # 1. Handle and validate parameters
-    # Convert token_limit to integer with fallback
+    # Convert token_limit to integer, falling back to the configured default
     try:
-        token_limit = int(token_limit) if token_limit else 8192
+        token_limit = int(token_limit) if token_limit else config.map.token_limit
     except (TypeError, ValueError):
-        token_limit = 8192
-    
-    # Ensure token_limit is positive
+        token_limit = config.map.token_limit
     if token_limit <= 0:
-        token_limit = 8192
+        token_limit = config.map.token_limit
     
     chat_files_list = chat_files or []
     mentioned_fnames_set = set(mentioned_files) if mentioned_files else None
@@ -192,7 +193,8 @@ async def repo_map(
             output_handler_funcs={'info': log.info, 'warning': log.warning, 'error': log.error},
             verbose=verbose,
             exclude_unranked=exclude_unranked,
-            max_context_window=max_context_window
+            max_context_window=max_context_window,
+            config=config,
         )
     except Exception as e:
         log.exception(f"Failed to initialize RepoMap for project '{project_root}': {e}")
@@ -219,18 +221,18 @@ async def repo_map(
         if errors:
             report_dict["parse_errors"] = errors
         
-        return {
+        response = {
             "map": map_content or "No repository map could be generated.",
             "report": report_dict,
             "hint": hint,
         }
+        if config.warnings:
+            response["config_warnings"] = config.warnings
+        return response
     except Exception as e:
         log.exception(f"Error generating repository map for project '{project_root}': {e}")
         return {"error": f"Error generating repository map: {str(e)}"}
     
-MAX_CONTEXT_LINE_LENGTH = 200
-
-
 def truncate_lines(text: str, max_length: int) -> str:
     """Cap each line so long lines (data blobs, generated code) can't bloat results."""
     return "\n".join(
@@ -261,11 +263,13 @@ async def search_identifiers(
     
     Returns:
         Dictionary containing search results or error message, plus 'parse_errors' if any files failed to parse
+        and 'config_warnings' if .repomap/config.toml has problems (tell the user)
     """
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
+    config = load_config(project_root)
 
     try:
         # Initialize RepoMap with search-specific settings
@@ -275,7 +279,8 @@ async def search_identifiers(
             file_reader_func=read_text,
             output_handler_funcs={'info': log.info, 'warning': log.warning, 'error': log.error},
             verbose=False,
-            exclude_unranked=True
+            exclude_unranked=True,
+            config=config,
         )
 
         # Find all source files in the project
@@ -321,7 +326,7 @@ async def search_identifiers(
             )
             
             if context:
-                context = truncate_lines(context, MAX_CONTEXT_LINE_LENGTH)
+                context = truncate_lines(context, config.search.max_context_line_length)
                 results.append({
                     "file": tag.rel_fname,
                     "line": tag.line,
@@ -334,6 +339,8 @@ async def search_identifiers(
         errors = parse_error_summary(repo_map.parse_errors, project_root)
         if errors:
             response["parse_errors"] = errors
+        if config.warnings:
+            response["config_warnings"] = config.warnings
         return response
 
     except Exception as e:
