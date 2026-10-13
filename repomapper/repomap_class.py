@@ -5,8 +5,10 @@ RepoMap class for generating repository maps.
 import os
 import sys
 from pathlib import Path
-from collections import namedtuple, defaultdict
+from collections import Counter, namedtuple, defaultdict
 from typing import List, Dict, Set, Optional, Tuple, Callable, Any, Union
+import bisect
+import math
 import shutil
 import sqlite3
 from repomapper.utils import Tag
@@ -39,6 +41,30 @@ SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
 
 # Tag namedtuple for storing parsed code definitions and references
 Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
+
+
+MINIFIED_AVG_LINE_LENGTH = 300
+
+
+def is_minified(code: str) -> bool:
+    """Heuristic for minified/bundled files, which bloat maps and search context."""
+    return len(code) / (code.count("\n") + 1) > MINIFIED_AVG_LINE_LENGTH
+
+
+def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str]) -> float:
+    """Edge weight multiplier for an identifier, following aider's repo-map heuristics."""
+    mul = 1.0
+    is_snake = "_" in name and any(c.isalpha() for c in name)
+    is_camel = any(c.isupper() for c in name) and any(c.islower() for c in name)
+    if name in mentioned_idents:
+        mul *= 10
+    if (is_snake or is_camel) and len(name) >= 8:
+        mul *= 10
+    if name.startswith("_"):
+        mul *= 0.1
+    if num_definers > 5:
+        mul *= 0.1
+    return mul
 
 
 class RepoMap:
@@ -189,9 +215,11 @@ class RepoMap:
             lexer = guess_lexer_for_filename(fname, code)
         except ClassNotFound:
             return []
+        line_starts = [0] + [i + 1 for i, ch in enumerate(code) if ch == "\n"]
         return [
-            Tag(rel_fname=rel_fname, fname=fname, line=-1, name=text, kind="ref")
-            for token_type, text in lexer.get_tokens(code)
+            Tag(rel_fname=rel_fname, fname=fname, line=bisect.bisect_right(line_starts, index),
+                name=text, kind="ref")
+            for index, token_type, text in lexer.get_tokens_unprocessed(code)
             if token_type in Token.Name
         ]
 
@@ -221,7 +249,7 @@ class RepoMap:
             return []
         
         code = self.read_text_func_internal(fname)
-        if not code:
+        if not code or is_minified(code):
             return []
         
         try:
@@ -260,11 +288,14 @@ class RepoMap:
                         kind=kind
                     ))
 
-            # Some query files only capture definitions (e.g. TypeScript, C++).
-            # Backfill references from pygments name tokens so ranking has edges.
-            kinds = {tag.kind for tag in tags}
-            if "def" in kinds and "ref" not in kinds:
-                tags.extend(self.get_pygments_refs(fname, rel_fname, code))
+            # Many query files capture few or no references (e.g. TypeScript only
+            # captures type annotations, not calls). Merge in pygments name tokens
+            # so ranking and search see every use of an identifier.
+            seen = {(tag.name, tag.line) for tag in tags if tag.kind == "ref"}
+            tags.extend(
+                tag for tag in self.get_pygments_refs(fname, rel_fname, code)
+                if (tag.name, tag.line) not in seen
+            )
 
             return tags
             
@@ -310,7 +341,7 @@ class RepoMap:
         
         # Collect all tags
         defines = defaultdict(set)
-        references = defaultdict(set)
+        references = defaultdict(Counter)
         definitions = defaultdict(set)
         
         personalization = {}
@@ -337,7 +368,7 @@ class RepoMap:
                     definitions[rel_fname].add(tag.name)
                     total_definitions += 1
                 elif tag.kind == "ref":
-                    references[tag.name].add(rel_fname)
+                    references[tag.name][rel_fname] += 1
                     total_references += 1
             
             # Set personalization for chat files
@@ -353,12 +384,18 @@ class RepoMap:
             G.add_node(rel_fname)
         
         # Add edges based on references
-        for name, ref_fnames in references.items():
+        for name, ref_counts in references.items():
             def_fnames = defines.get(name, set())
-            for ref_fname in ref_fnames:
+            if not def_fnames:
+                continue
+            mul = identifier_weight(name, len(def_fnames), mentioned_idents)
+            for ref_fname, count in ref_counts.items():
+                weight = mul * math.sqrt(count)
+                if ref_fname in chat_rel_fnames:
+                    weight *= 50
                 for def_fname in def_fnames:
                     if ref_fname != def_fname:
-                        G.add_edge(ref_fname, def_fname, name=name)
+                        G.add_edge(ref_fname, def_fname, weight=weight, name=name)
         
         if not G.nodes():
             return [], file_report

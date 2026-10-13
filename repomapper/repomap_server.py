@@ -162,6 +162,17 @@ async def repo_map(
         log.exception(f"Error generating repository map for project '{project_root}': {e}")
         return {"error": f"Error generating repository map: {str(e)}"}
     
+MAX_CONTEXT_LINE_LENGTH = 200
+
+
+def truncate_lines(text: str, max_length: int) -> str:
+    """Cap each line so long lines (data blobs, generated code) can't bloat results."""
+    return "\n".join(
+        line if len(line) <= max_length else line[:max_length - 3] + "..."
+        for line in text.splitlines()
+    )
+
+
 @mcp.tool()
 async def search_identifiers(
     project_root: str,
@@ -243,6 +254,7 @@ async def search_identifiers(
             )
             
             if context:
+                context = truncate_lines(context, MAX_CONTEXT_LINE_LENGTH)
                 results.append({
                     "file": tag.rel_fname,
                     "line": tag.line,

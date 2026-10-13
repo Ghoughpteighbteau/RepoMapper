@@ -73,3 +73,42 @@ def test_chat_file_raises_rank_of_files_it_references(tmp_path):
     rank = {tag.rel_fname: r for r, tag in ranked}
 
     assert rank["core.ts"] > rank["alone.ts"]
+
+
+def test_backfilled_refs_have_line_numbers(tmp_path):
+    (tmp_path / "a.ts").write_text("export function foo() {}\n\nfoo();\n")
+    tags = make_repomap(tmp_path).get_tags(str(tmp_path / "a.ts"), "a.ts")
+
+    assert [t.line for t in tags if t.kind == "ref" and t.name == "foo"] == [1, 3]
+
+
+def test_skips_minified_files(tmp_path):
+    body = ";".join(f"function f{i}(a){{return a}}" for i in range(200))
+    (tmp_path / "lib-min.js").write_text(body + "\n")
+
+    assert make_repomap(tmp_path).get_tags(str(tmp_path / "lib-min.js"), "lib-min.js") == []
+
+
+def test_finds_call_refs_in_files_with_type_refs(tmp_path):
+    source = "import { interleave } from './u';\nexport function run(x: Thing) {\n  return interleave(x);\n}\n"
+    (tmp_path / "a.ts").write_text(source)
+    tags = make_repomap(tmp_path).get_tags(str(tmp_path / "a.ts"), "a.ts")
+    refs = {(t.name, t.line) for t in tags if t.kind == "ref"}
+
+    assert ("Thing", 2) in refs
+    assert ("interleave", 3) in refs
+
+
+def test_specific_identifiers_outrank_common_ones(tmp_path):
+    files = {f"common{i}.ts": "export function create() {}\n" for i in range(6)}
+    files["bundle.js"] = "function create() {}\n"
+    files["core.ts"] = "export function fetchUserAccount() {}\n"
+    files["chat.ts"] = "fetchUserAccount();\ncreate();\n"
+    paths = make_project(tmp_path, files)
+    chat = str(tmp_path / "chat.ts")
+    ranked, _ = make_repomap(tmp_path).get_ranked_tags(
+        chat_fnames=[chat], other_fnames=[p for p in paths if p != chat],
+    )
+    rank = {tag.rel_fname: r for r, tag in ranked}
+
+    assert rank["core.ts"] > rank["bundle.js"]

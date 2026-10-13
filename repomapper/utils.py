@@ -59,7 +59,7 @@ def read_text(filename: str, encoding: str = "utf-8", silent: bool = False) -> O
         return None
 
 
-SKIP_DIRS = {'node_modules', '__pycache__', 'venv', 'env'}
+SKIP_DIRS = {'node_modules', '__pycache__', 'venv', 'env', 'vendor'}
 
 
 def _git_files(directory: str) -> Optional[List[str]]:

@@ -34,3 +34,11 @@ def test_single_file_path(tmp_path):
     f.write_text("")
 
     assert find_src_files(str(f)) == [str(f)]
+
+
+def test_skips_vendor_directories(tmp_path):
+    (tmp_path / "a.js").write_text("")
+    (tmp_path / "js" / "vendor").mkdir(parents=True)
+    (tmp_path / "js" / "vendor" / "lib.js").write_text("")
+
+    assert rel_files(tmp_path) == ["a.js"]
