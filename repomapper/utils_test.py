@@ -184,3 +184,20 @@ def test_init_flags_js_barrels(tmp_path):
 
     assert section_with(ignore_sections(tmp_path), "barrel") == ["index.ts"]
 
+
+
+def test_init_flags_files_whose_definitions_are_mostly_single_letters(tmp_path):
+    body = "\n".join(f"function {chr(97 + i)}(t, e) {{\n  return t + e;\n}}" for i in range(15))
+    (tmp_path / "lib.js").write_text(body + "\nfunction format(x) {\n  return x;\n}\n")
+    (tmp_path / "app.js").write_text("function a(x) {}\nfunction render(x) {}\nfunction main() {}\n")
+
+    init_ignore_file(str(tmp_path))
+
+    assert section_with(ignore_sections(tmp_path), "minified") == ["lib.js"]
+
+
+def test_mostly_single_letters():
+    from repomapper.utils import mostly_single_letters
+    assert mostly_single_letters(list("abcdefghij") + ["format"])
+    assert not mostly_single_letters(["a", "b", "c"])           # too few to judge
+    assert not mostly_single_letters(list("abcde") + [f"name{i}" for i in range(10)])

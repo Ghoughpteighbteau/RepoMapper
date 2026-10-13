@@ -131,7 +131,8 @@ async def repo_map(
             - 'excluded': dictionary of excluded files with reasons
             - 'definition_matches': count of matched definitions
             - 'reference_matches': count of matched references
-            - 'total_files_considered': total files processed
+            - 'parseable_files': files in a supported language, which the map can show
+            - 'total_files_considered': all files given, including docs, configs and lock files
             - 'git_history' (unseeded maps): commits the activity signals used, or why there were none
             - 'parse_errors' (only if any): count of files that failed to parse and a few example errors
         - 'config_warnings' (only if any): problems in .repomap/config.toml or areas.toml; tell the user
@@ -216,7 +217,8 @@ async def repo_map(
             "excluded": file_report.excluded,
             "definition_matches": file_report.definition_matches,
             "reference_matches": file_report.reference_matches,
-            "total_files_considered": file_report.total_files_considered
+            "parseable_files": file_report.parseable_files,
+            "total_files_considered": file_report.total_files_considered,
         }
         if file_report.git_history:
             report_dict["git_history"] = file_report.git_history

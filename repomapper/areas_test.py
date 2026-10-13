@@ -13,12 +13,13 @@ def write_areas(root, text):
     (root / ".repomap" / "areas.toml").write_text(text)
 
 
-def test_template_has_no_entries_or_warnings(tmp_path):
+def test_template_has_no_path_entries_or_warnings(tmp_path):
     write_areas(tmp_path, AREAS_TEMPLATE)
 
     areas = load_areas(str(tmp_path))
 
     assert areas.entries == {} and areas.warnings == []
+    assert "*_test.*" in areas.globs
 
 
 def test_nearest_entry_wins_per_key():
@@ -119,3 +120,62 @@ def test_stale_entries_counts_commits_since_entry_was_edited(tmp_path):
     stale = stale_entries(str(tmp_path), areas, GitConfig(stale_area_commits=3))
     assert len(stale) == 1 and f'paths."src" was last edited {edited}, 3 commits' in stale[0]
     assert stale_entries(str(tmp_path), areas, GitConfig(stale_area_commits=4)) == []
+
+
+def test_glob_entries_apply_to_matching_files_and_beat_folder_entries(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    write_areas(tmp_path, '[paths."pkg"]\nimportance = "core"\nnote = "the package"\n'
+                          '[globs."*_test.*"]\nimportance = "low"\nkind = "test"\n')
+
+    areas = load_areas(str(tmp_path))
+    test = areas.resolve("pkg/sub/a_test.py")
+
+    assert areas.warnings == []
+    assert (test.importance, test.kind, test.note) == ("low", "test", "the package")
+    assert areas.resolve("pkg/a.py").importance == "core" and areas.resolve("pkg/a.py").kind is None
+
+
+def test_exact_path_entry_beats_glob(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "x_test.py").write_text("")
+    write_areas(tmp_path, '[paths."pkg/x_test.py"]\nimportance = "core"\n'
+                          '[globs."*_test.*"]\nimportance = "low"\nkind = "test"\n')
+
+    resolved = load_areas(str(tmp_path)).resolve("pkg/x_test.py")
+
+    assert (resolved.importance, resolved.kind) == ("core", "test")
+
+
+def test_glob_syntax_anchors_paths_with_slashes():
+    areas = Areas(globs={"tests/**": Area(kind="test"), "**/__tests__/**": Area(kind="test"),
+                         "karma*.conf.js": Area(kind="config")})
+
+    assert areas.resolve("tests/a/b.py").kind == "test"
+    assert areas.resolve("tests").kind == "test"          # the folder itself, so the outline demotes it
+    assert areas.resolve("src/tests/b.py").kind is None   # a slash anchors the pattern at the root
+    assert areas.resolve("src/x/__tests__/a.js").kind == "test"
+    assert areas.resolve("ui/karma.conf.js").kind == "config"   # no slash: matches the file name anywhere
+    assert areas.resolve("ui/src/app.js").kind is None
+
+
+def test_bad_kind_is_reported(tmp_path):
+    write_areas(tmp_path, '[globs."*.spec.*"]\nkind = "spec"\n')
+
+    areas = load_areas(str(tmp_path))
+
+    assert areas.globs == {"*.spec.*": Area()}
+    assert len(areas.warnings) == 1 and "kind" in areas.warnings[0]
+
+
+def test_template_globs_demote_tests_and_configs(tmp_path):
+    write_areas(tmp_path, AREAS_TEMPLATE)
+
+    areas = load_areas(str(tmp_path))
+
+    assert areas.resolve("src/app.spec.ts").kind == "test"
+    assert areas.resolve("src/app.spec.ts").importance == "low"
+    assert areas.resolve("pkg/test_x.py").kind == "test"
+    assert areas.resolve("ui/eslint.config.mjs").kind == "config"
+    assert areas.resolve("ui/karma.conf.js").kind == "config"
+    assert areas.resolve("docker-bake.hcl").kind == "config"
+    assert areas.resolve("src/app.ts").kind is None

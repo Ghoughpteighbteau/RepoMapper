@@ -3,13 +3,10 @@
 [map]
 # token_limit = 8192
 
-[tests]
-# Test files are demoted in unseeded outlines (counted, but no sample names or edges).
-# globs = ["*_test.*", "test_*.*", "*.spec.*", "*.test.*", "tests/**", "**/__tests__/**"]
-
 [languages]
-# Files only link through shared names within a language family.
-# families = [["javascript", "typescript", "tsx"], ["c", "cpp"]]
+# Files only link through shared names within a language family (a language in none is its own family).
+# Test and config files are marked with kind in areas.toml.
+# families = [["javascript", "typescript", "tsx"], ["c", "cpp", "objc"], ["java", "kotlin", "scala", "groovy"]]
 
 [ranking]
 # pagerank_alpha = 0.85
@@ -37,6 +34,7 @@
 # files_per_dir = 10
 # max_langs = 3
 # max_edges = 12
+# common_name_dirs = 5         # names defined in more directories than this (ngOnInit, value) aren't sample names
 
 [search]
 # max_context_line_length = 200

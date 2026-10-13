@@ -1,12 +1,14 @@
 # Hints about parts of this project that RepoMapper can't derive from the code.
-# Keys are paths relative to the project root. The nearest entry wins, per key: a child entry
-# overrides only the keys it sets, the rest come from the nearest ancestor that sets them.
+# [paths."..."] keys are paths relative to the project root; [globs."..."] keys are patterns (no slash: file
+# or folder name anywhere; with one: the whole path, `**` across folders). Per key, strongest first: the
+# path's own [paths] entry, then globs matching it (file order), then the same for each folder above it.
 #
 #   importance  = "core" | "normal" | "low"          (default "normal") share of the outline and ranking
 #   status      = "active" | "legacy" | "deprecated"  (default "active") shown on the outline and seeded maps
 #   replaced_by = "path"   where to look instead of legacy or deprecated code
 #   fold        = true     always one line in the outline (seeded maps still open it)
 #   note        = "..."    one line shown next to the path
+#   kind        = "test" | "config"   counted in the unseeded outline, but no sample names or dependency edges
 #
 # Examples:
 #
@@ -67,3 +69,19 @@ note = "Maps language names to queries/*.scm files"
 importance = "low"
 fold = true
 note = "Vendored tree-sitter tag queries; language-pack takes precedence over languages"
+
+[globs."*_test.*"]
+importance = "low"
+kind = "test"
+
+[globs."test_*.*"]
+importance = "low"
+kind = "test"
+
+[globs."tests/**"]
+importance = "low"
+kind = "test"
+
+[globs."conftest.py"]
+importance = "low"
+kind = "test"

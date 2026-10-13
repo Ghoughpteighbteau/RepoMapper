@@ -1,4 +1,5 @@
 """Hand-written hints from .repomap/areas.toml: importance, status and notes per path."""
+import functools
 import json
 import os
 import re
@@ -17,6 +18,7 @@ AREAS_FILE = f"{REPOMAP_DIR}/areas.toml"
 
 IMPORTANCE = ("core", "normal", "low")
 STATUS = ("active", "legacy", "deprecated")
+KIND = ("test", "config")
 
 
 @dataclass
@@ -27,10 +29,11 @@ class Area:
     replaced_by: Optional[str] = None
     fold: Optional[bool] = None
     note: Optional[str] = None
+    kind: Optional[str] = None     # "test" or "config": counted in the unseeded outline, but no names or edges
 
 
-CHOICES = {"importance": IMPORTANCE, "status": STATUS}
-TYPES = {"importance": str, "status": str, "replaced_by": str, "fold": bool, "note": str}
+CHOICES = {"importance": IMPORTANCE, "status": STATUS, "kind": KIND}
+TYPES = {"importance": str, "status": str, "replaced_by": str, "fold": bool, "note": str, "kind": str}
 DEFAULTS = Area(importance="normal", status="active", fold=False)
 
 
@@ -48,23 +51,49 @@ def ancestors(path: str) -> List[str]:
     return ["/".join(parts[:i]) for i in range(len(parts), -1, -1)]
 
 
+@functools.lru_cache(maxsize=None)
+def glob_regex(pattern: str) -> re.Pattern:
+    """Compile an areas.toml glob. Without a slash it matches the file or folder name anywhere; with one it
+    matches the whole root-relative path, `*` within one segment and `**` across any number. A trailing `/**`
+    also matches the folder itself."""
+    pattern = normalize(pattern)
+    out = "" if "/" in pattern else "(?:.*/)?"
+    for part in re.split(r"(\*\*/|/\*\*$|\*\*|\*|\?)", pattern):
+        out += {"**/": "(?:.*/)?", "/**": "(?:/.*)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}.get(part, re.escape(part))
+    return re.compile(out + r"\Z")
+
+
 @dataclass
 class Areas:
     entries: Dict[str, Area] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    globs: Dict[str, Area] = field(default_factory=dict)   # pattern -> entry, in file order
+    _resolved: Dict[str, Area] = field(default_factory=dict, compare=False, repr=False)
+
+    def chain(self, path: str) -> List[Area]:
+        """Entries that apply to path, strongest first: for the path and then each folder above it, its exact
+        entry followed by the globs matching it (in file order)."""
+        out = []
+        for p in ancestors(path):
+            if p in self.entries:
+                out.append(self.entries[p])
+            if p:
+                out += [entry for pattern, entry in self.globs.items() if glob_regex(pattern).match(p)]
+        return out
 
     def resolve(self, path: str) -> Area:
-        """Effective settings for path: per key, the nearest entry that sets it, else the default."""
+        """Effective settings for path: per key, the strongest entry that sets it (see chain), else the default."""
+        if path in self._resolved:
+            return self._resolved[path]
         result = Area()
-        for p in ancestors(path):
-            entry = self.entries.get(p)
-            if entry:
-                for f in fields(Area):
-                    if getattr(result, f.name) is None:
-                        setattr(result, f.name, getattr(entry, f.name))
+        for entry in self.chain(path):
+            for f in fields(Area):
+                if getattr(result, f.name) is None:
+                    setattr(result, f.name, getattr(entry, f.name))
         for f in fields(Area):
             if getattr(result, f.name) is None:
                 setattr(result, f.name, getattr(DEFAULTS, f.name))
+        self._resolved[path] = result
         return result
 
 
@@ -97,31 +126,32 @@ def load_areas(root: str) -> Areas:
         areas.warnings.append(f"{AREAS_FILE}: {message}")
 
     for key in table:
-        if key != "paths":
-            warn(f"unknown table '{key}'; entries go under [paths.\"some/dir\"]")
-    paths = table.get("paths", {})
-    if not isinstance(paths, dict):
-        warn("'paths' should be a table")
-        return areas
+        if key not in ("paths", "globs"):
+            warn(f"unknown table '{key}'; entries go under [paths.\"some/dir\"] or [globs.\"*_test.*\"]")
 
-    for raw_path, values in paths.items():
-        path = normalize(raw_path)
-        if not isinstance(values, dict):
-            warn(f"paths.\"{raw_path}\" should be a table")
+    for section, target in (("paths", areas.entries), ("globs", areas.globs)):
+        raw_entries = table.get(section, {})
+        if not isinstance(raw_entries, dict):
+            warn(f"'{section}' should be a table")
             continue
-        if not os.path.exists(os.path.join(root, path)):
-            warn(f"paths.\"{raw_path}\" doesn't exist")
-        entry = Area()
-        for key, value in values.items():
-            if key not in TYPES:
-                warn(f"paths.\"{raw_path}\": unknown key '{key}'")
-            elif not isinstance(value, TYPES[key]):
-                warn(f"paths.\"{raw_path}\".{key} should be {TYPES[key].__name__}, got {value!r}")
-            elif key in CHOICES and value not in CHOICES[key]:
-                warn(f"paths.\"{raw_path}\".{key} should be one of {', '.join(CHOICES[key])}, got {value!r}")
-            else:
-                setattr(entry, key, value)
-        areas.entries[path] = entry
+        for raw_path, values in raw_entries.items():
+            name = f'{section}."{raw_path}"'
+            if not isinstance(values, dict):
+                warn(f"{name} should be a table")
+                continue
+            if section == "paths" and not os.path.exists(os.path.join(root, normalize(raw_path))):
+                warn(f"{name} doesn't exist")
+            entry = Area()
+            for key, value in values.items():
+                if key not in TYPES:
+                    warn(f"{name}: unknown key '{key}'")
+                elif not isinstance(value, TYPES[key]):
+                    warn(f"{name}.{key} should be {TYPES[key].__name__}, got {value!r}")
+                elif key in CHOICES and value not in CHOICES[key]:
+                    warn(f"{name}.{key} should be one of {', '.join(CHOICES[key])}, got {value!r}")
+                else:
+                    setattr(entry, key, value)
+            target[normalize(raw_path) if section == "paths" else raw_path] = entry
     return areas
 
 

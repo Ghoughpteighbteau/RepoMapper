@@ -16,15 +16,10 @@ class MapConfig:
 
 
 @dataclass
-class TestsConfig:
-    globs: List[str] = field(default_factory=lambda: [
-        "*_test.*", "test_*.*", "*.spec.*", "*.test.*", "tests/**", "**/__tests__/**",
-    ])
-
-
-@dataclass
 class LanguagesConfig:
-    families: List[List[str]] = field(default_factory=lambda: [["javascript", "typescript", "tsx"], ["c", "cpp"]])
+    families: List[List[str]] = field(default_factory=lambda: [
+        ["javascript", "typescript", "tsx"], ["c", "cpp", "objc"], ["java", "kotlin", "scala", "groovy"],
+    ])
 
 
 @dataclass
@@ -60,8 +55,10 @@ class RankingConfig:
 class OutlineConfig:
     defs_per_file: int = 4
     files_per_dir: int = 10
+    dirs_per_dir: int = 12
     max_langs: int = 3
     max_edges: int = 12
+    common_name_dirs: int = 5
 
 
 @dataclass
@@ -81,7 +78,6 @@ class GitConfig:
 @dataclass
 class Config:
     map: MapConfig = field(default_factory=MapConfig)
-    tests: TestsConfig = field(default_factory=TestsConfig)
     languages: LanguagesConfig = field(default_factory=LanguagesConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
     outline: OutlineConfig = field(default_factory=OutlineConfig)

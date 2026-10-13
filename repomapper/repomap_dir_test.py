@@ -14,7 +14,7 @@ def test_init_creates_every_file_and_cache_dir(tmp_path):
 def test_templates_are_valid_toml(tmp_path):
     init_repomap_dir(str(tmp_path))
 
-    assert tomllib.loads((tmp_path / ".repomap" / "areas.toml").read_text()) == {}
+    assert set(tomllib.loads((tmp_path / ".repomap" / "areas.toml").read_text())) == {"globs"}
     assert "ranking" in tomllib.loads((tmp_path / ".repomap" / "config.toml").read_text())
 
 

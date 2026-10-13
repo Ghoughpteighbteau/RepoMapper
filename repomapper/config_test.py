@@ -52,3 +52,18 @@ def test_invalid_toml_falls_back_to_defaults(tmp_path):
 
     assert config.map == Config().map
     assert len(config.warnings) == 1
+
+
+def test_tests_section_is_gone_in_favor_of_areas_globs(tmp_path):
+    write_config(tmp_path, '[tests]\nglobs = ["*_test.*"]\n')
+
+    config = load_config(str(tmp_path))
+
+    assert not hasattr(config, "tests")
+    assert len(config.warnings) == 1
+
+
+def test_default_language_families_link_js_ts_c_cpp_and_jvm():
+    families = Config().languages.families
+    for group in (["javascript", "typescript"], ["c", "cpp"], ["java", "kotlin", "scala"]):
+        assert any(set(group) <= set(f) for f in families), group

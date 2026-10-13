@@ -38,9 +38,10 @@ class FileReport:
     excluded: Dict[str, str]        # File -> exclusion reason with status
     definition_matches: int         # Total definition tags
     reference_matches: int          # Total reference tags
-    total_files_considered: int     # Total files provided as input
+    total_files_considered: int     # Total files provided as input, including unparseable ones (docs, queries)
     parse_errors: Dict[str, str] = field(default_factory=dict)  # File -> error, for files that failed to parse
     git_history: Optional[str] = None  # What history signals used, or why there were none (unseeded maps only)
+    parseable_files: int = 0        # Files of those with a tree-sitter language, which can hold definitions
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Ranking:
     mentioned_fnames: Set[str]
     mentioned_idents: Set[str]
     chat_rel_fnames: Set[str]
+    nested: Dict[str, Set[str]] = field(default_factory=dict)  # rel_fname -> names only defined inside functions
 
 
 
@@ -91,6 +93,20 @@ SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
 # Tag namedtuple for storing parsed code definitions and references
 Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 
+# Nested definitions also get a tag of kind "nested", so the outline can skip local helpers as sample names
+# while ranking still links to them (code wrapped in an IIFE or a factory function is all nested).
+FUNCTION_NODE_WORDS = ("function", "method", "lambda", "closure")
+
+
+def is_nested(name_node) -> bool:
+    """Whether a definition's name sits inside a function body, above the definition's own node."""
+    node = name_node.parent.parent if name_node.parent else None
+    while node is not None:
+        if any(word in node.type for word in FUNCTION_NODE_WORDS):
+            return True
+        node = node.parent
+    return False
+
 
 def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str],
                       weights: IdentifierWeightConfig = IdentifierWeightConfig()) -> float:
@@ -107,6 +123,17 @@ def identifier_weight(name: str, num_definers: int, mentioned_idents: Set[str],
     if num_definers > weights.common_definers:
         mul *= weights.common
     return mul
+
+
+def language_families(families: List[List[str]]) -> Callable[[str], str]:
+    """fname -> its language family: the first language of its group in families, else its own language."""
+    from grep_ast import filename_to_lang
+    group = {lang: langs[0] for langs in families for lang in langs}
+
+    def family(fname: str) -> str:
+        lang = filename_to_lang(fname) or ""
+        return group.get(lang, lang)
+    return family
 
 
 class RepoMap:
@@ -351,6 +378,8 @@ class RepoMap:
                         name=name,
                         kind=kind
                     ))
+                    if kind == "def" and is_nested(node):
+                        tags.append(Tag(rel_fname=rel_fname, fname=fname, line=line_num, name=name, kind="nested"))
 
             # Many query files capture few or no references (e.g. TypeScript only
             # captures type annotations, not calls). Merge in pygments name tokens
@@ -460,11 +489,14 @@ class RepoMap:
         defines = defaultdict(set)
         references = defaultdict(Counter)
         definitions = defaultdict(set)
+        nested: Dict[str, Counter] = defaultdict(Counter)
+        def_counts: Counter = Counter()
         
         personalization = {}
         chat_rel_fnames = set(self.get_rel_fname(f) for f in chat_fnames)
         
         all_fnames = list(set(chat_fnames + other_fnames))
+        parseable_files = sum(1 for fname in all_fnames if is_parseable(fname))
         
         for fname in all_fnames:
             rel_fname = self.get_rel_fname(fname)
@@ -483,10 +515,13 @@ class RepoMap:
                 if tag.kind == "def":
                     defines[tag.name].add(rel_fname)
                     definitions[rel_fname].add(tag.name)
+                    def_counts[(rel_fname, tag.name)] += 1
                     total_definitions += 1
                 elif tag.kind == "ref":
                     references[tag.name][rel_fname] += 1
                     total_references += 1
+                elif tag.kind == "nested":
+                    nested[rel_fname][tag.name] += 1
             
             # Seed PageRank from chat files and, more weakly, mentioned files
             if fname in chat_fnames:
@@ -502,7 +537,9 @@ class RepoMap:
             rel_fname = self.get_rel_fname(fname)
             G.add_node(rel_fname)
         
-        # Add edges based on references
+        # Add edges based on references, only between files of the same language family
+        family = language_families(self.config.languages.families)
+        file_family = {self.get_rel_fname(f): family(f) for f in all_fnames}
         for name, ref_counts in references.items():
             def_fnames = defines.get(name, set())
             if not def_fnames:
@@ -513,12 +550,12 @@ class RepoMap:
                 if ref_fname in chat_rel_fnames:
                     weight *= ranking_config.chat_file_ref_weight
                 for def_fname in def_fnames:
-                    if ref_fname != def_fname:
+                    if ref_fname != def_fname and file_family[ref_fname] == file_family[def_fname]:
                         G.add_edge(ref_fname, def_fname, weight=weight, name=name)
         
         if not G.nodes():
             report = FileReport(excluded, total_definitions, total_references, len(all_fnames),
-                                dict(self.parse_errors))
+                                dict(self.parse_errors), parseable_files=parseable_files)
             return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
                            chat_rel_fnames)
         
@@ -529,7 +566,7 @@ class RepoMap:
             history = self.history()
             git_history = history.summary() if history else "unavailable (not a git repository, or no commits)"
             factors = activity_factors(history, G.nodes(), self.config.git)
-            weighted = any(e.importance for e in self.areas.entries.values())
+            weighted = any(e.importance for e in [*self.areas.entries.values(), *self.areas.globs.values()])
             if factors or weighted:
                 seed = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
                 personalization = {node: seed[self.areas.resolve(node).importance] * factors.get(node, 1.0)
@@ -560,6 +597,7 @@ class RepoMap:
             total_files_considered=len(all_fnames),
             parse_errors=dict(self.parse_errors),
             git_history=git_history,
+            parseable_files=parseable_files,
         )
         
         # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
@@ -571,8 +609,11 @@ class RepoMap:
             for _, dst, data in out_edges:
                 ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
 
+        # A name also defined outside functions in the same file is no local helper
+        nested = {rel: {name for name, n in counts.items() if n == def_counts[(rel, name)]}
+                  for rel, counts in nested.items()}
         return Ranking(G, ranks, ident_ranks, included, definitions, file_report, mentioned_fnames,
-                       mentioned_idents, chat_rel_fnames)
+                       mentioned_idents, chat_rel_fnames, nested)
 
     def get_outline(self, other_fnames: List[str], max_tokens: int,
                     force_refresh: bool = False) -> Tuple[Optional[str], FileReport]:
@@ -586,12 +627,13 @@ class RepoMap:
             rel_fname = self.get_rel_fname(fname)
             if not is_parseable(fname):
                 continue
+            nested = ranking.nested.get(rel_fname, set())
             defs = sorted(
                 ((ranking.ident_ranks.get((rel_fname, name), 0.0), name)
-                 for name in ranking.definitions.get(rel_fname, ())),
+                 for name in ranking.definitions.get(rel_fname, ()) if name not in nested),
                 reverse=True,
             )
-            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs[:self.config.outline.defs_per_file])
+            files[rel_fname] = OutlineFile(ranking.file_ranks.get(rel_fname, 0.0), defs)
 
         # Shares of the shown files: unparseable nodes (queries, docs) would otherwise hold most of the rank
         total_rank = sum(f.rank for f in files.values()) or 1.0
@@ -612,8 +654,10 @@ class RepoMap:
 
         history = self.history()
         activity = history.describe if history else (lambda path: None)
+        ranking_config = self.config.ranking
+        importance = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
         return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
-                              activity), ranking.report
+                              activity, importance), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""

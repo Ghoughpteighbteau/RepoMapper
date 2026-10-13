@@ -174,8 +174,21 @@ def is_barrel(path: str, code: str) -> bool:
     return bool(REEXPORT.search(code)) and not JS_MODULE_STATEMENT.sub("", code).strip()
 
 
+# Minifiers that keep line breaks still rename to single letters; judged on definition names
+MINIFIED_MIN_DEFS = 10
+MINIFIED_SINGLE_LETTER_SHARE = 0.5
+JS_DEFINITION = re.compile(r"\b(?:function\s*\*?|class|var|let|const)\s+([A-Za-z_$][\w$]*)")
+
+
+def mostly_single_letters(names: List[str]) -> bool:
+    """Whether most of a file's definition names are one character, as minifiers leave them."""
+    return (len(names) >= MINIFIED_MIN_DEFS
+            and sum(len(n) == 1 for n in names) / len(names) > MINIFIED_SINGLE_LETTER_SHARE)
+
+
 DETECTED_SECTIONS = [
-    ("minified", f"Detected as minified (average line length > {MINIFIED_AVG_LINE_LENGTH})"),
+    ("minified", f"Detected as minified (average line length > {MINIFIED_AVG_LINE_LENGTH}, "
+                 "or definitions mostly single letters)"),
     ("bundled", "Detected as bundled (bundler-renamed identifiers or runtime helpers)"),
     ("barrel", "Detected as JS/TS barrels (only imports and re-exports)"),
     ("large", f"Detected as very large (> {LARGE_FILE_LINES} lines), possibly bundled or generated"),
@@ -193,6 +206,8 @@ def classify_generated(path: str) -> Optional[str]:
         return None
     lines = code.count("\n") + 1
     if len(code) / lines > MINIFIED_AVG_LINE_LENGTH:
+        return "minified"
+    if path.endswith(BARREL_EXTENSIONS) and mostly_single_letters(JS_DEFINITION.findall(code)):
         return "minified"
     if any(h in code for h in BUNDLER_HELPERS) or len(BUNDLER_RENAME.findall(code)) >= BUNDLER_RENAME_MIN:
         return "bundled"

@@ -266,3 +266,63 @@ def test_recent_commits_raise_unseeded_rank_and_seeded_maps_ignore_them(tmp_path
     assert tilted.file_ranks["alone.ts"] > plain.file_ranks["alone.ts"]
     assert tilted.report.git_history.startswith("1 commit since")
     assert make_repomap(tmp_path).build_ranking([files[0]], files[1:]).report.git_history is None
+
+
+def test_report_counts_parseable_files_apart_from_all_considered(tmp_path):
+    fnames = make_project(tmp_path, {**PROJECT, "README.md": "# docs\n", "uv.lock": "x\n"})
+    _out, report = make_repomap(tmp_path).get_repo_map([], fnames)
+    assert report.total_files_considered == len(PROJECT) + 2
+    assert report.parseable_files == len(PROJECT)
+
+
+def test_names_only_link_files_of_the_same_language_family(tmp_path):
+    files = make_project(tmp_path, {
+        "codec.ts": "export function fromBase64(s: string) { return s; }\n",
+        "Mail.java": "class Mail { String body() { return fromBase64(x); } }\n",
+        "page.js": "fromBase64('x');\n",
+    })
+    graph = make_repomap(tmp_path).build_ranking([], files).graph
+
+    assert graph.has_edge("page.js", "codec.ts")
+    assert not graph.has_edge("Mail.java", "codec.ts")
+
+
+def test_language_families_come_from_config(tmp_path):
+    from repomapper.config import Config, LanguagesConfig
+    files = make_project(tmp_path, {
+        "codec.ts": "export function fromBase64(s: string) { return s; }\n",
+        "page.js": "fromBase64('x');\n",
+    })
+    rm = make_repomap(tmp_path)
+    rm.config = Config(languages=LanguagesConfig(families=[]))
+
+    assert not rm.build_ranking([], files).graph.has_edge("page.js", "codec.ts")
+
+
+def test_nested_helpers_are_not_outline_samples(tmp_path):
+    files = make_project(tmp_path, {
+        "walker.py": "def run_all(n):\n    def walk(x):\n        return x\n    return walk(n)\n\n"
+                     "class Tree:\n    def visit(self):\n        return 1\n",
+        "user.py": "import os\nfor p in os.walk('.'):\n    run_all(p)\nTree().visit()\n",
+    })
+    tags = make_repomap(tmp_path).get_tags(files[0], "walker.py")
+    out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
+
+    assert {t.name for t in tags if t.kind == "def"} >= {"run_all", "walk", "Tree", "visit"}   # still ranked
+    assert {t.name for t in tags if t.kind == "nested"} == {"walk"}
+    samples = out.split("walker.py ")[1].split("\n")[0].split(": ")[1].split(", ")
+    assert "walk" not in samples
+    assert {"run_all", "visit"} <= set(samples)
+
+
+def test_outline_demotes_test_files_from_areas_globs(tmp_path):
+    files = make_project(tmp_path, {
+        "core.py": "def helper():\n    return 1\n",
+        "core_test.py": "from core import helper\ndef test_helper():\n    assert helper()\n",
+    })
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[globs."*_test.*"]\nimportance = "low"\nkind = "test"\n')
+    out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
+
+    assert "1 test" in out
+    assert "test_helper" not in out and "Dependencies" not in out

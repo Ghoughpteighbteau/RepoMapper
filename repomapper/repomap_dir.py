@@ -14,14 +14,21 @@ cache/
 
 AREAS_TEMPLATE = """\
 # Hints about parts of this project that RepoMapper can't derive from the code.
-# Keys are paths relative to the project root. The nearest entry wins, per key: a child entry
-# overrides only the keys it sets, the rest come from the nearest ancestor that sets them.
+# [paths."..."] keys are paths relative to the project root; [globs."..."] keys are patterns. A glob without
+# a slash matches file or folder names anywhere ("*_test.*"); with one it matches the whole path from the
+# root, `*` within a folder name and `**` across folders ("tests/**" is tests/ and everything below it).
+#
+# Each key is resolved on its own, from the strongest entry that sets it. Strongest first: the path's own
+# [paths] entry, then globs matching the path (in file order), then the same for its folder, its parent and
+# so on up. So a [paths] entry beats a glob, and a glob matching a file beats an entry for its folder:
+# "*_test.*" below keeps tests low inside a "core" folder, and the folder's note still applies to them.
 #
 #   importance  = "core" | "normal" | "low"          (default "normal") share of the outline and ranking
 #   status      = "active" | "legacy" | "deprecated"  (default "active") shown on the outline and seeded maps
 #   replaced_by = "path"   where to look instead of legacy or deprecated code
 #   fold        = true     always one line in the outline (seeded maps still open it)
 #   note        = "..."    one line shown next to the path
+#   kind        = "test" | "config"   counted in the unseeded outline, but no sample names or dependency edges
 #
 # Examples:
 #
@@ -38,6 +45,74 @@ AREAS_TEMPLATE = """\
 # [paths."src/old-reports"]
 # status = "deprecated"
 # fold = true
+
+# Tests and tool configs. Remove or override what doesn't fit this project.
+
+[globs."*_test.*"]
+importance = "low"
+kind = "test"
+
+[globs."test_*.*"]
+importance = "low"
+kind = "test"
+
+[globs."*.spec.*"]
+importance = "low"
+kind = "test"
+
+[globs."*.test.*"]
+importance = "low"
+kind = "test"
+
+[globs."tests/**"]
+importance = "low"
+kind = "test"
+
+[globs."**/__tests__/**"]
+importance = "low"
+kind = "test"
+
+[globs."conftest.py"]
+importance = "low"
+kind = "test"
+
+[globs."karma*.conf.js"]
+kind = "config"
+
+[globs."eslint.config.*"]
+kind = "config"
+
+[globs.".eslintrc.*"]
+kind = "config"
+
+[globs."jest.config.*"]
+kind = "config"
+
+[globs."vite.config.*"]
+kind = "config"
+
+[globs."webpack.config.*"]
+kind = "config"
+
+[globs."babel.config.*"]
+kind = "config"
+
+[globs."tailwind.config.*"]
+kind = "config"
+
+[globs."postcss.config.*"]
+kind = "config"
+
+[globs."prettier.config.*"]
+kind = "config"
+
+[globs."docker-bake.*"]
+kind = "config"
+[globs."setup.py"]
+kind = "config"
+
+[globs."noxfile.py"]
+kind = "config"
 """
 
 CONFIG_TEMPLATE = """\
@@ -46,13 +121,10 @@ CONFIG_TEMPLATE = """\
 [map]
 # token_limit = 8192
 
-[tests]
-# Test files are demoted in unseeded outlines (counted, but no sample names or edges).
-# globs = ["*_test.*", "test_*.*", "*.spec.*", "*.test.*", "tests/**", "**/__tests__/**"]
-
 [languages]
-# Files only link through shared names within a language family.
-# families = [["javascript", "typescript", "tsx"], ["c", "cpp"]]
+# Files only link through shared names within a language family (a language in none is its own family).
+# Test and config files are marked with kind in areas.toml.
+# families = [["javascript", "typescript", "tsx"], ["c", "cpp", "objc"], ["java", "kotlin", "scala", "groovy"]]
 
 [ranking]
 # pagerank_alpha = 0.85
@@ -80,8 +152,10 @@ CONFIG_TEMPLATE = """\
 [outline]
 # defs_per_file = 4
 # files_per_dir = 10
+# dirs_per_dir = 12            # an open directory lists its biggest subdirectories, then "+N more dirs"
 # max_langs = 3
 # max_edges = 12
+# common_name_dirs = 5         # names defined in more directories than this (ngOnInit, value) aren't sample names
 
 [search]
 # max_context_line_length = 200
