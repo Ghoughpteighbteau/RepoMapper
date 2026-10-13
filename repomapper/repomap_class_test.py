@@ -134,3 +134,26 @@ def test_tags_cache_falls_back_to_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     assert make_repomap(tmp_path).tags_cache_dir() == tmp_path / ".cache"
+
+
+def test_mentioned_file_raises_rank_of_files_it_references(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    ranked, _ = make_repomap(tmp_path).get_ranked_tags(
+        chat_fnames=[], other_fnames=files, mentioned_fnames={"used.ts"},
+    )
+    rank = {tag.rel_fname: r for r, tag in ranked}
+
+    assert rank["core.ts"] > rank["alone.ts"]
+
+
+def test_parse_errors_are_reported_and_not_cached(tmp_path, monkeypatch):
+    files = make_project(tmp_path, PROJECT)
+    rm = make_repomap(tmp_path)
+    import tree_sitter
+    monkeypatch.setattr(tree_sitter, "Query", lambda *a: 1 / 0)
+
+    _, report = rm.get_ranked_tags(chat_fnames=[], other_fnames=files)
+
+    assert set(report.parse_errors) == set(files)
+    assert "division by zero" in report.parse_errors[files[0]]
+    assert rm.TAGS_CACHE.get(files[0]) is None

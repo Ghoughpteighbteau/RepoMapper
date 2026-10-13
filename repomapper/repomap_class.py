@@ -12,7 +12,7 @@ import math
 import shutil
 import sqlite3
 from repomapper.utils import Tag
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import diskcache
 import networkx as nx
 from grep_ast import TreeContext
@@ -30,6 +30,7 @@ class FileReport:
     definition_matches: int         # Total definition tags
     reference_matches: int          # Total reference tags
     total_files_considered: int     # Total files provided as input
+    parse_errors: Dict[str, str] = field(default_factory=dict)  # File -> error, for files that failed to parse
 
 
 
@@ -37,6 +38,10 @@ class FileReport:
 CACHE_VERSION = 1
 
 TAGS_CACHE_DIR = f".repomap.tags.cache.v{CACHE_VERSION}"
+
+# Personalization weights: chat files seed PageRank strongly, mentioned files less so.
+CHAT_FILE_PERSONALIZATION = 100.0
+MENTIONED_FILE_PERSONALIZATION = 10.0
 SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
 
 # Tag namedtuple for storing parsed code definitions and references
@@ -102,6 +107,8 @@ class RepoMap:
         self.tree_cache = {}
         self.tree_context_cache = {}
         self.map_cache = {}
+        # Files that failed to parse in this run (fname -> error), surfaced in reports.
+        self.parse_errors: Dict[str, str] = {}
         
         # Load persistent tags cache
         self.load_tags_cache()
@@ -194,7 +201,10 @@ class RepoMap:
 
         # Cache miss, file changed, or forced refresh
         tags = self.get_tags_raw(fname, rel_fname)
-        
+        if fname in self.parse_errors:
+            # Don't cache failures, so they're retried and reported on every run.
+            return tags
+
         try:
             self.TAGS_CACHE[fname] = {"mtime": file_mtime, "data": tags}
         except SQLITE_ERRORS:
@@ -234,7 +244,7 @@ class RepoMap:
             language = get_language(lang)
             parser = get_parser(lang)
         except Exception as err:
-            self.output_handlers['error'](f"Skipping file {fname}: {err}")
+            self.record_parse_error(fname, f"Skipping file: {err}")
             return []
         
         scm_fname = get_scm_fname(lang)
@@ -293,8 +303,17 @@ class RepoMap:
             return tags
             
         except Exception as e:
-            self.output_handlers['error'](f"Error parsing {fname}: {e}")
+            self.record_parse_error(fname, f"Error parsing: {e}")
             return []
+
+    def record_parse_error(self, fname: str, message: str):
+        """Log a parse failure and remember it so reports can show it to the caller."""
+        self.parse_errors[fname] = message
+        self.output_handlers['error'](f"{fname}: {message}")
+
+    def normalize_mentioned_fnames(self, mentioned_fnames: Set[str]) -> Set[str]:
+        """Mentioned files may be absolute or relative to the root; return root-relative names."""
+        return {self.get_rel_fname(str((self.root / f).resolve())) for f in mentioned_fnames}
     
     def get_ranked_tags(
         self,
@@ -307,15 +326,14 @@ class RepoMap:
         """Get ranked tags using PageRank algorithm with file report."""
         # Return empty list and empty report if no files
         if not chat_fnames and not other_fnames:
-            return [], FileReport([], {}, 0, 0, 0)
+            return [], FileReport({}, 0, 0, 0)
             
         # Initialize file report early
         included: List[str] = []
         excluded: Dict[str, str] = {}
         total_definitions = 0
         total_references = 0
-        if mentioned_fnames is None:
-            mentioned_fnames = set()
+        mentioned_fnames = self.normalize_mentioned_fnames(mentioned_fnames or set())
         if mentioned_idents is None:
             mentioned_idents = set()
         
@@ -365,9 +383,11 @@ class RepoMap:
                     references[tag.name][rel_fname] += 1
                     total_references += 1
             
-            # Set personalization for chat files
+            # Seed PageRank from chat files and, more weakly, mentioned files
             if fname in chat_fnames:
-                personalization[rel_fname] = 100.0
+                personalization[rel_fname] = CHAT_FILE_PERSONALIZATION
+            elif rel_fname in mentioned_fnames:
+                personalization[rel_fname] = MENTIONED_FILE_PERSONALIZATION
         
         # Build graph
         G = nx.MultiDiGraph()
@@ -392,7 +412,8 @@ class RepoMap:
                         G.add_edge(ref_fname, def_fname, weight=weight, name=name)
         
         if not G.nodes():
-            return [], file_report
+            return [], FileReport(excluded, total_definitions, total_references, len(all_fnames),
+                                  dict(self.parse_errors))
         
         # Run PageRank
         try:
@@ -417,7 +438,8 @@ class RepoMap:
             excluded=excluded,
             definition_matches=total_definitions,
             reference_matches=total_references,
-            total_files_considered=len(all_fnames)
+            total_files_considered=len(all_fnames),
+            parse_errors=dict(self.parse_errors),
         )
         
         # Collect and rank tags
@@ -649,7 +671,6 @@ class RepoMap:
             return None, FileReport({}, 0, 0, 0)  # Ensure consistent return type
         
         if map_string is None:
-            print("map_string is None")
             return None, file_report
         
         if self.verbose:

@@ -54,6 +54,24 @@ def ignore_hint(created: bool) -> str:
     return f"{CREATED_HINT} {IGNORE_HINT}" if created else IGNORE_HINT
 
 
+MAX_ERROR_EXAMPLES = 5
+
+
+def parse_error_summary(parse_errors: Dict[str, str], root: str) -> Optional[Dict[str, Any]]:
+    """Count of files that failed to parse plus a few examples, or None if there were none."""
+    if not parse_errors:
+        return None
+    examples = [
+        f"{os.path.relpath(fname, root)}: {error}"
+        for fname, error in sorted(parse_errors.items())[:MAX_ERROR_EXAMPLES]
+    ]
+    return {
+        "failed_files": len(parse_errors),
+        "examples": examples,
+        "note": "These files were skipped. Tell the user if the failures look like a RepoMapper bug.",
+    }
+
+
 def resolve_project_root(root: Optional[str] = None) -> str:
     """The explicit --root if given, else the git root of the cwd, else the cwd."""
     if root:
@@ -102,6 +120,7 @@ async def repo_map(
             - 'definition_matches': count of matched definitions
             - 'reference_matches': count of matched references
             - 'total_files_considered': total files processed
+            - 'parse_errors' (only if any): count of files that failed to parse and a few example errors
         Or an 'error' key if an error occurred.
     """
     project_root = PROJECT_ROOT
@@ -184,6 +203,9 @@ async def repo_map(
             "reference_matches": file_report.reference_matches,
             "total_files_considered": file_report.total_files_considered
         }
+        errors = parse_error_summary(file_report.parse_errors, project_root)
+        if errors:
+            report_dict["parse_errors"] = errors
         
         return {
             "map": map_content or "No repository map could be generated.",
@@ -226,7 +248,7 @@ async def search_identifiers(
         include_references: Whether to include reference occurrences
     
     Returns:
-        Dictionary containing search results or error message
+        Dictionary containing search results or error message, plus 'parse_errors' if any files failed to parse
     """
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
@@ -296,7 +318,11 @@ async def search_identifiers(
                     "context": context
                 })
 
-        return {"results": results, "hint": hint}
+        response = {"results": results, "hint": hint}
+        errors = parse_error_summary(repo_map.parse_errors, project_root)
+        if errors:
+            response["parse_errors"] = errors
+        return response
 
     except Exception as e:
         log.exception(f"Error searching identifiers in project '{project_root}': {e}")

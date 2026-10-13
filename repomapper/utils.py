@@ -153,15 +153,36 @@ BUNDLER_RENAME = re.compile(r"[A-Za-z_]\w*\$\$?\d+\b")
 BUNDLER_RENAME_MIN = 20
 BUNDLER_HELPERS = ("__webpack_require__", "__commonJS(", "__toESM(")
 
+# JS/TS barrels: files made only of imports and re-exports (e.g. an index.ts of `export * from`).
+# They define nothing, so they only add noise edges to the graph.
+BARREL_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+JS_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+JS_MODULE_STATEMENT = re.compile(
+    r"""(?:import|export)\b[^;'"]*?\bfrom\s*(['"])[^'"]*\1\s*;?"""   # import/export ... from '...'
+    r"""|import\s*(['"])[^'"]*\2\s*;?"""                          # import '...'
+    r"""|export\s+(?:type\s+)?\{[^}]*\}\s*;?"""                   # export { a, b }
+)
+REEXPORT = re.compile(r"\bexport\b[^;'\"]*?\bfrom\b")
+
+
+def is_barrel(path: str, code: str) -> bool:
+    """Whether a JS/TS file only imports and re-exports other modules."""
+    if not path.endswith(BARREL_EXTENSIONS):
+        return False
+    code = JS_COMMENT.sub("", code)
+    return bool(REEXPORT.search(code)) and not JS_MODULE_STATEMENT.sub("", code).strip()
+
+
 DETECTED_SECTIONS = [
     ("minified", f"Detected as minified (average line length > {MINIFIED_AVG_LINE_LENGTH})"),
     ("bundled", "Detected as bundled (bundler-renamed identifiers or runtime helpers)"),
+    ("barrel", "Detected as JS/TS barrels (only imports and re-exports)"),
     ("large", f"Detected as very large (> {LARGE_FILE_LINES} lines), possibly bundled or generated"),
 ]
 
 
 def classify_generated(path: str) -> Optional[str]:
-    """Return 'minified', 'bundled' or 'large' if the file looks generated, else None."""
+    """Return 'minified', 'bundled', 'barrel' or 'large' if the file looks generated or uninformative, else None."""
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             code = f.read()
@@ -174,6 +195,8 @@ def classify_generated(path: str) -> Optional[str]:
         return "minified"
     if any(h in code for h in BUNDLER_HELPERS) or len(BUNDLER_RENAME.findall(code)) >= BUNDLER_RENAME_MIN:
         return "bundled"
+    if is_barrel(path, code):
+        return "barrel"
     if lines > LARGE_FILE_LINES:
         return "large"
     return None

@@ -154,3 +154,21 @@ def test_init_flags_very_large_files(tmp_path):
     init_ignore_file(str(tmp_path))
 
     assert section_with(ignore_sections(tmp_path), "large") == ["big.py"]
+
+
+def test_init_flags_js_barrels(tmp_path):
+    (tmp_path / "index.ts").write_text(
+        "// public API\n"
+        "export * from './a';\n"
+        "export { b, c as d } from './b';\n"
+        "export type { T } from './types';\n"
+        "import { e } from './e';\n"
+        "export {\n  e,\n};\n"
+    )
+    (tmp_path / "a.ts").write_text("import { x } from './x';\nexport const a = x + 1;\n")
+    (tmp_path / "imports.ts").write_text("import './polyfill';\nimport { y } from './y';\n")
+    (tmp_path / "__init__.py").write_text("from .a import *\n")
+
+    init_ignore_file(str(tmp_path))
+
+    assert section_with(ignore_sections(tmp_path), "barrel") == ["index.ts"]
