@@ -62,7 +62,8 @@ def read_text(filename: str, encoding: str = "utf-8", silent: bool = False) -> O
         return None
 
 
-IGNORE_FILE = ".repomapignore"
+REPOMAP_DIR = ".repomap"
+IGNORE_FILE = f"{REPOMAP_DIR}/ignore"
 
 DEFAULT_IGNORE_PATTERNS = [
     "# Hidden files and directories",
@@ -109,18 +110,18 @@ def _git_files(directory: str) -> Optional[List[str]]:
 
 
 def load_ignore_spec(root: str) -> pathspec.GitIgnoreSpec:
-    """Load root/.repomapignore, falling back to the default patterns if it doesn't exist."""
+    """Load root/.repomap/ignore, falling back to the default patterns if it doesn't exist."""
     try:
         with open(os.path.join(root, IGNORE_FILE), encoding="utf-8") as f:
-            return pathspec.GitIgnoreSpec.from_lines([f"/{IGNORE_FILE}", *f])
+            return pathspec.GitIgnoreSpec.from_lines([f"/{REPOMAP_DIR}/", *f])
     except FileNotFoundError:
         return pathspec.GitIgnoreSpec.from_lines(DEFAULT_IGNORE_PATTERNS)
 
 
 def find_src_files(directory: str, ignore_root: Optional[str] = None) -> List[str]:
-    """Find source files in a directory, skipping files ignored by git or .repomapignore.
+    """Find source files in a directory, skipping files ignored by git or .repomap/ignore.
 
-    Patterns in .repomapignore are relative to ignore_root (defaults to directory).
+    Patterns in .repomap/ignore are relative to ignore_root (defaults to directory).
     """
     if not os.path.isdir(directory):
         return [directory] if os.path.isfile(directory) else []
@@ -202,15 +203,8 @@ def classify_generated(path: str) -> Optional[str]:
     return None
 
 
-def init_ignore_file(root: str) -> bool:
-    """Create root/.repomapignore with defaults and detected minified files, if missing.
-
-    Returns True if the file was created.
-    """
-    path = os.path.join(root, IGNORE_FILE)
-    if not os.path.isdir(root) or os.path.exists(path):
-        return False
-
+def ignore_file_content(root: str) -> str:
+    """Default patterns plus files under root detected as minified, bundled, barrels or very large."""
     detected = defaultdict(list)
     for f in find_src_files(root):
         kind = is_parseable(f) and classify_generated(f)
@@ -218,7 +212,8 @@ def init_ignore_file(root: str) -> bool:
             detected[kind].append(os.path.relpath(f, root).replace(os.sep, "/"))
 
     lines = [
-        "# Files RepoMapper skips, in .gitignore syntax. Files ignored by git are skipped too.",
+        "# Files RepoMapper skips, in .gitignore syntax, relative to the project root.",
+        "# Files ignored by git are skipped too.",
         "# Generated on first run; edit freely. Add vendored, bundled or generated files here.",
         "",
         *DEFAULT_IGNORE_PATTERNS,
@@ -226,9 +221,4 @@ def init_ignore_file(root: str) -> bool:
     for kind, heading in DETECTED_SECTIONS:
         if detected[kind]:
             lines += ["", f"# {heading}; remove any false positives", *sorted(detected[kind])]
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-    except OSError:
-        return False
-    return True
+    return "\n".join(lines) + "\n"

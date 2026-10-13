@@ -10,6 +10,7 @@ from repomapper import repomap_class, repomap_server
 def isolated_project(tmp_path, monkeypatch):
     monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", str(tmp_path / ".cache"))
     monkeypatch.setattr(repomap_server, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(repomap_server, "CREATED_FILES", [])
 
 
 def search(**kwargs):
@@ -28,14 +29,15 @@ def test_search_context_lines_are_capped(tmp_path):
     assert all(len(line) <= repomap_server.MAX_CONTEXT_LINE_LENGTH for r in results for line in r["context"].splitlines())
 
 
-def test_search_suggests_repomapignore(tmp_path):
+def test_search_suggests_ignore_file(tmp_path):
     (tmp_path / "a.ts").write_text("export function interleave() {}\n")
 
-    assert ".repomapignore" in search(query="interleave")["hint"]
+    assert ".repomap/ignore" in search(query="interleave")["hint"]
 
 
-def test_search_respects_repomapignore(tmp_path):
-    (tmp_path / ".repomapignore").write_text("bundle.js\n")
+def test_search_respects_ignore_file(tmp_path):
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "ignore").write_text("bundle.js\n")
     (tmp_path / "a.ts").write_text("export function interleave() {}\n")
     (tmp_path / "bundle.js").write_text("function interleave() {}\n")
 
@@ -44,14 +46,15 @@ def test_search_respects_repomapignore(tmp_path):
     assert files == {"a.ts"}
 
 
-def test_first_search_creates_ignore_file_and_says_so(tmp_path):
+def test_startup_init_is_reported_in_first_response_only(tmp_path):
     (tmp_path / "a.ts").write_text("export function interleave() {}\n")
 
+    repomap_server.init_project(str(tmp_path))
     first = search(query="interleave")["hint"]
     second = search(query="interleave")["hint"]
 
-    assert (tmp_path / ".repomapignore").exists()
-    assert "Created .repomapignore" in first
+    assert (tmp_path / ".repomap" / "ignore").exists()
+    assert "Created .repomap/ignore" in first
     assert "Created" not in second
 
 

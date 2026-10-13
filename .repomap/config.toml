@@ -1,0 +1,47 @@
+# RepoMapper settings. Every key is optional; the commented values are the defaults.
+
+[map]
+# token_limit = 8192
+
+[tests]
+# Test files are demoted in unseeded outlines (counted, but no sample names or edges).
+# globs = ["*_test.*", "test_*.*", "*.spec.*", "*.test.*", "tests/**", "**/__tests__/**"]
+
+[languages]
+# Files only link through shared names within a language family.
+# families = [["javascript", "typescript", "tsx"], ["c", "cpp"]]
+
+[ranking]
+# pagerank_alpha = 0.85
+# chat_file_personalization = 100.0     # PageRank seed for files in the chat
+# mentioned_file_personalization = 10.0 # PageRank seed for mentioned files
+# chat_file_ref_weight = 50.0           # edge multiplier for references made from chat files
+
+[ranking.identifier_weight]
+# Edge weight multipliers per identifier.
+# mentioned = 10.0                # identifier mentioned in the conversation
+# specific = 10.0                 # snake_case or camelCase name at least specific_min_length long
+# specific_min_length = 8
+# private = 0.1                   # name starts with "_"
+# common = 0.1                    # defined in more than common_definers files
+# common_definers = 5
+
+[ranking.definition_boost]
+# Multipliers on a definition's rank in the signature map.
+# mentioned_ident = 10.0
+# mentioned_file = 5.0
+# chat_file = 20.0
+
+[outline]
+# defs_per_file = 4
+# files_per_dir = 10
+# max_langs = 3
+# max_edges = 12
+
+[search]
+# max_context_line_length = 200
+
+[git]
+# history_years = 2             # how far back git history signals look
+# bulk_commit_files = 50        # commits touching more files are skipped (reformats, renames, bumps)
+# recency_half_life_days = 90

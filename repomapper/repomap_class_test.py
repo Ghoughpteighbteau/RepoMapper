@@ -1,4 +1,3 @@
-import subprocess
 
 import pytest
 
@@ -121,19 +120,10 @@ def test_force_refresh_reparses_cached_tags(tmp_path):
     assert rm.get_tags(fname, "a.ts") == stale
 
 
-def test_tags_cache_goes_in_git_root(tmp_path, monkeypatch):
-    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", ".cache")
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / "sub").mkdir()
+def test_tags_cache_goes_in_repomap_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", repomap_class.TAGS_CACHE_DIR_DEFAULT)
 
-    assert make_repomap(tmp_path / "sub").tags_cache_dir() == tmp_path.resolve() / ".cache"
-
-
-def test_tags_cache_falls_back_to_cwd(tmp_path, monkeypatch):
-    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", ".cache")
-    monkeypatch.chdir(tmp_path)
-
-    assert make_repomap(tmp_path).tags_cache_dir() == tmp_path / ".cache"
+    assert make_repomap(tmp_path).tags_cache_dir() == tmp_path.resolve() / ".repomap" / "cache" / "tags.v1"
 
 
 def test_mentioned_file_raises_rank_of_files_it_references(tmp_path):

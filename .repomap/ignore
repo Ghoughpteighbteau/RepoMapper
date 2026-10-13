@@ -1,0 +1,13 @@
+# Files RepoMapper skips, in .gitignore syntax, relative to the project root.
+# Files ignored by git are skipped too.
+# Generated on first run; edit freely. Add vendored, bundled or generated files here.
+
+# Hidden files and directories
+.*
+
+# Dependency, environment and vendored code
+node_modules/
+__pycache__/
+venv/
+env/
+vendor/

@@ -9,7 +9,8 @@ import dataclasses
 
 from fastmcp import FastMCP, settings
 from repomapper.repomap_class import RepoMap
-from repomapper.utils import count_tokens, read_text, find_src_files, init_ignore_file, find_git_root
+from repomapper.utils import count_tokens, read_text, find_src_files, find_git_root
+from repomapper.repomap_dir import init_repomap_dir
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -41,17 +42,28 @@ mcp = FastMCP("RepoMapServer")
 
 IGNORE_HINT = (
     "If results include vendored, minified, bundled or generated files that aren't useful, "
-    "suggest the user add gitignore-style patterns for them to .repomapignore in the project root."
+    "suggest the user add gitignore-style patterns for them to .repomap/ignore in the project root."
 )
 
-CREATED_HINT = (
-    "Created .repomapignore in the project root with default patterns and any files detected as minified. "
-    "Tell the user so they can review it and remove false positives."
-)
+# Files init_project created at startup, reported in the first tool response and then cleared.
+CREATED_FILES: List[str] = []
 
 
-def ignore_hint(created: bool) -> str:
-    return f"{CREATED_HINT} {IGNORE_HINT}" if created else IGNORE_HINT
+def init_project(root: str) -> None:
+    global CREATED_FILES
+    CREATED_FILES = init_repomap_dir(root)
+
+
+def ignore_hint() -> str:
+    global CREATED_FILES
+    if not CREATED_FILES:
+        return IGNORE_HINT
+    created, CREATED_FILES = CREATED_FILES, []
+    return (
+        f"Created {', '.join(created)} in the project root. .repomap/ignore lists default patterns and files "
+        "detected as generated; areas.toml and config.toml are commented templates. Tell the user so they can "
+        f"review them, remove false positives and commit .repomap/. {IGNORE_HINT}"
+    )
 
 
 MAX_ERROR_EXAMPLES = 5
@@ -100,8 +112,8 @@ async def repo_map(
     files. Provide filenames relative to the project root. In addition to the files provided, relevant related files will also be included with a
     very small ranking boost.
 
-    Files matching .gitignore or .repomapignore (gitignore syntax, in the project root) are skipped. If the map is
-    dominated by vendored, minified, bundled or generated files, suggest adding them to .repomapignore.
+    Files matching .gitignore or .repomap/ignore (gitignore syntax, relative to the project root) are skipped. If the
+    map is dominated by vendored, minified, bundled or generated files, suggest adding them to .repomap/ignore.
 
     :param chat_files: A list of file paths that are currently in the chat context. These files will receive the highest ranking.
     :param other_files: A list of other relevant file paths in the repository to consider for the map. They receive a lower ranking boost than mentioned_files and chat_files.
@@ -126,7 +138,7 @@ async def repo_map(
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
-    hint = ignore_hint(init_ignore_file(project_root))
+    hint = ignore_hint()
 
     # 1. Handle and validate parameters
     # Convert token_limit to integer with fallback
@@ -237,8 +249,8 @@ async def search_identifiers(
 ) -> Dict[str, Any]:
     """Search for identifiers in code files. Get back a list of matching identifiers with their file, line number, and context.
        When searching, just use the identifier name without any special characters, prefixes or suffixes. The search is 
-       case-insensitive. Files matching .gitignore or .repomapignore are skipped; if hits come from vendored,
-       minified or generated files, suggest adding them to .repomapignore.
+       case-insensitive. Files matching .gitignore or .repomap/ignore are skipped; if hits come from vendored,
+       minified or generated files, suggest adding them to .repomap/ignore.
 
     Args:
         query: Search query (identifier name)
@@ -253,7 +265,7 @@ async def search_identifiers(
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
-    hint = ignore_hint(init_ignore_file(project_root))
+    hint = ignore_hint()
 
     try:
         # Initialize RepoMap with search-specific settings
@@ -338,6 +350,7 @@ def main():
     )
     args = parser.parse_args()
     PROJECT_ROOT = resolve_project_root(args.root)
+    init_project(PROJECT_ROOT)
 
     # Run the MCP server
     log.debug("Starting FastMCP server...")

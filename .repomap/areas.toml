@@ -1,0 +1,25 @@
+# Hints about parts of this project that RepoMapper can't derive from the code.
+# Keys are paths relative to the project root. The nearest entry wins, per key: a child entry
+# overrides only the keys it sets, the rest come from the nearest ancestor that sets them.
+#
+#   importance  = "core" | "normal" | "low"          (default "normal") share of the outline and ranking
+#   status      = "active" | "legacy" | "deprecated"  (default "active") shown on the outline and seeded maps
+#   replaced_by = "path"   where to look instead of legacy or deprecated code
+#   fold        = true     always one line in the outline (seeded maps still open it)
+#   note        = "..."    one line shown next to the path
+#
+# Examples:
+#
+# [paths."src/api"]
+# importance = "core"
+# note = "REST backend; all DB access goes through lib/repositories"
+#
+# [paths."maps"]
+# importance = "low"
+# status = "legacy"
+# replaced_by = "src/api"
+# note = "GIS service; legacy but still developed"
+#
+# [paths."src/old-reports"]
+# status = "deprecated"
+# fold = true

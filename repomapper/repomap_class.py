@@ -19,7 +19,8 @@ from grep_ast import TreeContext
 from pygments.lexers import guess_lexer_for_filename
 from pygments.token import Token
 from pygments.util import ClassNotFound
-from repomapper.utils import count_tokens, read_text, find_git_root, is_parseable, Tag
+from repomapper.utils import count_tokens, read_text, is_parseable, Tag
+from repomapper.repomap_dir import CACHE_DIR
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 from repomapper.outline import OUTLINE_DEFS, OutlineFile, render_outline
@@ -51,7 +52,8 @@ class Ranking:
 # Constants
 CACHE_VERSION = 1
 
-TAGS_CACHE_DIR = f".repomap.tags.cache.v{CACHE_VERSION}"
+TAGS_CACHE_DIR_DEFAULT = f"{CACHE_DIR}/tags.v{CACHE_VERSION}"
+TAGS_CACHE_DIR = TAGS_CACHE_DIR_DEFAULT  # tests point this elsewhere
 
 # Personalization weights: chat files seed PageRank strongly, mentioned files less so.
 CHAT_FILE_PERSONALIZATION = 100.0
@@ -128,9 +130,8 @@ class RepoMap:
         self.load_tags_cache()
     
     def tags_cache_dir(self) -> Path:
-        """The tags cache lives in the git root of the mapped project, else the cwd."""
-        base = find_git_root(str(self.root)) or os.getcwd()
-        return Path(base) / TAGS_CACHE_DIR
+        """The tags cache lives in the project's .repomap/cache/."""
+        return Path(self.root) / TAGS_CACHE_DIR
 
     def load_tags_cache(self):
         """Load the persistent tags cache."""

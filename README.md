@@ -203,7 +203,7 @@ The tool generates a structured view of your codebase showing:
 
 The tool uses persistent caching to speed up subsequent runs:
 
--   Cache directory: `.repomap.tags.cache.v1/`
+-   Cache directory: `.repomap/cache/` (git-ignored by `.repomap/.gitignore`)
 -   Automatically invalidated when files change
 -   Can be cleared with `--force-refresh`
 
@@ -256,23 +256,37 @@ This implementation is based on the RepoMap design from the Aider project.
 
 ----------
 
-## Ignoring files
+## The `.repomap/` folder
 
-Files ignored by git are skipped automatically. Everything else RepoMapper skips is listed in `.repomapignore`
-in the project root, which uses `.gitignore` syntax.
+When `repomap` or the MCP server starts, it creates `.repomap/` in the project root with whichever of these
+files are missing. Existing files are never overwritten, so your edits stick; delete a file to regenerate it.
 
-The first time `repomap` or either MCP tool runs on a project, it creates this file with default patterns
-(hidden files, `node_modules/`, `__pycache__/`, `venv/`, `env/`, `vendor/`). It also lists any files that look
-minified (average line length over 300 characters) under their own heading. Review it, remove false positives,
-and add anything else that isn't useful in a map, such as bundled or generated code:
+```
+.repomap/
+  ignore        # files to skip, gitignore syntax
+  areas.toml    # importance, status and notes per path (commented template)
+  config.toml   # settings (commented template listing the defaults)
+  cache/        # tag cache, local only
+  .gitignore    # ignores cache/
+```
+
+Commit everything except `cache/` so the team shares the same hints and exclusions.
+
+### Ignoring files
+
+Files ignored by git are skipped automatically. Everything else RepoMapper skips is listed in `.repomap/ignore`,
+which uses `.gitignore` syntax with paths relative to the project root.
+
+It starts with default patterns (hidden files, `node_modules/`, `__pycache__/`, `venv/`, `env/`, `vendor/`)
+plus any files that look minified, bundled, like JS/TS barrels, or very large, each under its own heading.
+Review it, remove false positives, and add anything else that isn't useful in a map:
 
 ```gitignore
 # rollup bundle of the MCP server
 utils/mcp/server.js
 ```
 
-Once the file exists it is never regenerated, so your edits stick. Delete it to regenerate it. The MCP tools
-remind agents of this file, so they can suggest entries when results look noisy.
+The MCP tools remind agents of this file, so they can suggest entries when results look noisy.
 
 ## Running as an MCP Server
 

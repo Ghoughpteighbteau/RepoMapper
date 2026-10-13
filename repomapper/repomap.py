@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 from typing import List
 
-from repomapper.utils import count_tokens, read_text, Tag, find_src_files, init_ignore_file, IGNORE_FILE
+from repomapper.utils import count_tokens, read_text, Tag, find_src_files
+from repomapper.repomap_dir import init_repomap_dir
 from repomapper.scm import get_scm_fname
 from repomapper.importance import is_important, filter_important_files
 from repomapper.repomap_class import RepoMap
@@ -134,8 +135,9 @@ Examples:
         'error': tool_error
     }
     
-    if init_ignore_file(args.root):
-        tool_output(f"Created {IGNORE_FILE} in {Path(args.root).resolve()}; review it and remove any false positives.")
+    created = init_repomap_dir(args.root)
+    if created:
+        tool_output(f"Created {', '.join(created)} in {Path(args.root).resolve()}; review them and remove any false positives.")
 
     # Process file arguments
     chat_files_from_args = args.chat_files or [] # These are the paths as strings from the CLI

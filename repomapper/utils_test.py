@@ -1,7 +1,18 @@
 import subprocess
 from pathlib import Path
 
-from repomapper.utils import find_src_files, init_ignore_file
+from repomapper.utils import find_src_files
+from repomapper.repomap_dir import init_repomap_dir
+
+
+def init_ignore_file(root):
+    """Run init and say whether it wrote .repomap/ignore."""
+    return ".repomap/ignore" in init_repomap_dir(root)
+
+
+def write_ignore(root, text):
+    (root / ".repomap").mkdir(exist_ok=True)
+    (root / ".repomap" / "ignore").write_text(text)
 
 
 def rel_files(root):
@@ -44,8 +55,8 @@ def test_skips_vendor_directories(tmp_path):
     assert rel_files(tmp_path) == ["a.js"]
 
 
-def test_repomapignore_excludes_matching_files(tmp_path):
-    (tmp_path / ".repomapignore").write_text("# generated\nutils/mcp/server.js\n*.bundle.js\n")
+def test_ignore_file_excludes_matching_files(tmp_path):
+    write_ignore(tmp_path, "# generated\nutils/mcp/server.js\n*.bundle.js\n")
     (tmp_path / "a.ts").write_text("")
     (tmp_path / "x.bundle.js").write_text("")
     (tmp_path / "utils" / "mcp").mkdir(parents=True)
@@ -55,9 +66,9 @@ def test_repomapignore_excludes_matching_files(tmp_path):
     assert rel_files(tmp_path) == ["a.ts", "utils/mcp/index.ts"]
 
 
-def test_repomapignore_applies_inside_git_repos(tmp_path):
+def test_ignore_file_applies_inside_git_repos(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".repomapignore").write_text("generated/\n")
+    write_ignore(tmp_path, "generated/\n")
     (tmp_path / "a.ts").write_text("")
     (tmp_path / "generated").mkdir()
     (tmp_path / "generated" / "b.ts").write_text("")
@@ -65,8 +76,8 @@ def test_repomapignore_applies_inside_git_repos(tmp_path):
     assert rel_files(tmp_path) == ["a.ts"]
 
 
-def test_repomapignore_is_read_from_ignore_root(tmp_path):
-    (tmp_path / ".repomapignore").write_text("src/gen.ts\n")
+def test_ignore_file_is_read_from_ignore_root(tmp_path):
+    write_ignore(tmp_path, "src/gen.ts\n")
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "a.ts").write_text("")
     (tmp_path / "src" / "gen.ts").write_text("")
@@ -83,7 +94,7 @@ def test_init_ignore_file_writes_defaults_and_detected_minified(tmp_path):
 
     assert init_ignore_file(str(tmp_path))
 
-    lines = (tmp_path / ".repomapignore").read_text().splitlines()
+    lines = (tmp_path / ".repomap" / "ignore").read_text().splitlines()
     assert "vendor/" in lines
     assert "node_modules/" in lines
     assert "lib/dep-min.js" in lines
@@ -92,14 +103,14 @@ def test_init_ignore_file_writes_defaults_and_detected_minified(tmp_path):
 
 
 def test_init_ignore_file_leaves_existing_file_alone(tmp_path):
-    (tmp_path / ".repomapignore").write_text("custom\n")
+    write_ignore(tmp_path, "custom\n")
 
     assert not init_ignore_file(str(tmp_path))
-    assert (tmp_path / ".repomapignore").read_text() == "custom\n"
+    assert (tmp_path / ".repomap" / "ignore").read_text() == "custom\n"
 
 
 def test_existing_ignore_file_replaces_defaults(tmp_path):
-    (tmp_path / ".repomapignore").write_text("# nothing ignored\n")
+    write_ignore(tmp_path, "# nothing ignored\n")
     (tmp_path / "vendor").mkdir()
     (tmp_path / "vendor" / "lib.js").write_text("")
 
@@ -111,13 +122,13 @@ def test_init_ignore_file_only_flags_parseable_files(tmp_path):
 
     init_ignore_file(str(tmp_path))
 
-    assert "data.json" not in (tmp_path / ".repomapignore").read_text().splitlines()
+    assert "data.json" not in (tmp_path / ".repomap" / "ignore").read_text().splitlines()
 
 
 def ignore_sections(root):
-    """Map each '# ...' heading in .repomapignore to the patterns listed under it."""
+    """Map each '# ...' heading in .repomap/ignore to the patterns listed under it."""
     sections, current = {}, None
-    for line in (root / ".repomapignore").read_text().splitlines():
+    for line in (root / ".repomap" / "ignore").read_text().splitlines():
         if line.startswith("#"):
             current = sections.setdefault(line, [])
         elif line and current is not None:
@@ -172,3 +183,4 @@ def test_init_flags_js_barrels(tmp_path):
     init_ignore_file(str(tmp_path))
 
     assert section_with(ignore_sections(tmp_path), "barrel") == ["index.ts"]
+
