@@ -157,3 +157,27 @@ def test_parse_errors_are_reported_and_not_cached(tmp_path, monkeypatch):
     assert set(report.parse_errors) == set(files)
     assert "division by zero" in report.parse_errors[files[0]]
     assert rm.TAGS_CACHE.get(files[0]) is None
+
+
+def test_unseeded_map_ranks_referenced_files_higher(tmp_path):
+    files = make_project(tmp_path, PROJECT)
+    ranked, _ = make_repomap(tmp_path).get_ranked_tags(chat_fnames=[], other_fnames=files)
+    rank = {tag.rel_fname: r for r, tag in ranked}
+
+    assert rank["core.ts"] > rank["alone.ts"]
+
+
+def test_unreferenced_defs_in_popular_file_rank_below_used_defs_elsewhere(tmp_path):
+    helpers = "".join(f"export function unusedHelper{i}() {{}}\n" for i in range(20))
+    files = {
+        "utils.ts": "export function popularHelper() {}\n" + helpers,
+        "service.ts": "export function runService() {}\n",
+    }
+    files.update({f"page{i}.ts": "popularHelper();\n" for i in range(5)})
+    files["main.ts"] = "runService();\n"
+    ranked, _ = make_repomap(tmp_path).get_ranked_tags(
+        chat_fnames=[], other_fnames=make_project(tmp_path, files),
+    )
+    rank = {tag.name: r for r, tag in ranked}
+
+    assert rank["popularHelper"] > rank["runService"] > rank["unusedHelper0"]

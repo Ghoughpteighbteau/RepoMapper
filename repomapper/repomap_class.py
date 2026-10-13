@@ -417,10 +417,8 @@ class RepoMap:
         
         # Run PageRank
         try:
-            if personalization:
-                ranks = nx.pagerank(G, personalization=personalization, alpha=0.85)
-            else:
-                ranks = {node: 1.0 for node in G.nodes()}
+            # Without seeds, plain PageRank still ranks files by how much the repo references them
+            ranks = nx.pagerank(G, personalization=personalization or None, alpha=0.85)
         except ZeroDivisionError:
             # Fallback to uniform ranking
             ranks = {node: 1.0 for node in G.nodes()}
@@ -442,6 +440,15 @@ class RepoMap:
             parse_errors=dict(self.parse_errors),
         )
         
+        # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
+        # referenced rather than inheriting its file's rank (which let one popular file fill the map)
+        ident_ranks: Dict[Tuple[str, str], float] = defaultdict(float)
+        for src in G.nodes():
+            out_edges = G.out_edges(src, data=True)
+            total_weight = sum(data["weight"] for _, _, data in out_edges)
+            for _, dst, data in out_edges:
+                ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
+
         # Collect and rank tags
         ranked_tags = []
         
@@ -465,7 +472,8 @@ class RepoMap:
                     if rel_fname in chat_rel_fnames:
                         boost *= 20.0
                     
-                    final_rank = file_rank * boost
+                    # File rank breaks ties between unreferenced definitions
+                    final_rank = (ident_ranks.get((rel_fname, tag.name), 0.0) + file_rank * 1e-3) * boost
                     ranked_tags.append((final_rank, tag))
         
         # Sort by rank (descending)
