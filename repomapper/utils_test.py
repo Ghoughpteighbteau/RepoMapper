@@ -112,3 +112,45 @@ def test_init_ignore_file_only_flags_parseable_files(tmp_path):
     init_ignore_file(str(tmp_path))
 
     assert "data.json" not in (tmp_path / ".repomapignore").read_text().splitlines()
+
+
+def ignore_sections(root):
+    """Map each '# ...' heading in .repomapignore to the patterns listed under it."""
+    sections, current = {}, None
+    for line in (root / ".repomapignore").read_text().splitlines():
+        if line.startswith("#"):
+            current = sections.setdefault(line, [])
+        elif line and current is not None:
+            current.append(line)
+    return sections
+
+
+def section_with(sections, word):
+    return next(patterns for heading, patterns in sections.items() if "Detected" in heading and word in heading)
+
+
+def test_init_flags_rollup_bundles(tmp_path):
+    body = "\n".join(f"function create$${i}() {{ return process$1; }}" for i in range(30))
+    (tmp_path / "server.js").write_text(f"import process$1 from 'node:process';\n{body}\n")
+    (tmp_path / "price.js").write_text("const label = 'costs $1';\n")
+
+    init_ignore_file(str(tmp_path))
+
+    assert section_with(ignore_sections(tmp_path), "bundle") == ["server.js"]
+
+
+def test_init_flags_webpack_bundles(tmp_path):
+    (tmp_path / "app.js").write_text("var x = __webpack_require__(12);\n")
+
+    init_ignore_file(str(tmp_path))
+
+    assert section_with(ignore_sections(tmp_path), "bundle") == ["app.js"]
+
+
+def test_init_flags_very_large_files(tmp_path):
+    (tmp_path / "big.py").write_text("x = 1\n" * 10_001)
+    (tmp_path / "small.py").write_text("x = 1\n" * 100)
+
+    init_ignore_file(str(tmp_path))
+
+    assert section_with(ignore_sections(tmp_path), "large") == ["big.py"]

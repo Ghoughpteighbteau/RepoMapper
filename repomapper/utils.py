@@ -3,11 +3,12 @@ Utility functions for RepoMap.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, List
-from collections import namedtuple
+from collections import defaultdict, namedtuple
 
 import pathspec
 
@@ -132,14 +133,38 @@ def is_parseable(path: str) -> bool:
     return bool(lang and get_scm_fname(lang))
 
 
-def is_minified(path: str) -> bool:
-    """Heuristic for minified/bundled files: very long average line length."""
+LARGE_FILE_LINES = 10_000
+
+# Bundler fingerprints: rollup/esbuild rename clashing identifiers to name$1 / name$$0,
+# webpack and esbuild emit their own runtime helpers.
+BUNDLER_RENAME = re.compile(r"[A-Za-z_]\w*\$\$?\d+\b")
+BUNDLER_RENAME_MIN = 20
+BUNDLER_HELPERS = ("__webpack_require__", "__commonJS(", "__toESM(")
+
+DETECTED_SECTIONS = [
+    ("minified", f"Detected as minified (average line length > {MINIFIED_AVG_LINE_LENGTH})"),
+    ("bundled", "Detected as bundled (bundler-renamed identifiers or runtime helpers)"),
+    ("large", f"Detected as very large (> {LARGE_FILE_LINES} lines), possibly bundled or generated"),
+]
+
+
+def classify_generated(path: str) -> Optional[str]:
+    """Return 'minified', 'bundled' or 'large' if the file looks generated, else None."""
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             code = f.read()
     except OSError:
-        return False
-    return bool(code) and len(code) / (code.count("\n") + 1) > MINIFIED_AVG_LINE_LENGTH
+        return None
+    if not code:
+        return None
+    lines = code.count("\n") + 1
+    if len(code) / lines > MINIFIED_AVG_LINE_LENGTH:
+        return "minified"
+    if any(h in code for h in BUNDLER_HELPERS) or len(BUNDLER_RENAME.findall(code)) >= BUNDLER_RENAME_MIN:
+        return "bundled"
+    if lines > LARGE_FILE_LINES:
+        return "large"
+    return None
 
 
 def init_ignore_file(root: str) -> bool:
@@ -151,18 +176,21 @@ def init_ignore_file(root: str) -> bool:
     if not os.path.isdir(root) or os.path.exists(path):
         return False
 
-    minified = sorted(
-        os.path.relpath(f, root).replace(os.sep, "/")
-        for f in find_src_files(root) if is_parseable(f) and is_minified(f)
-    )
+    detected = defaultdict(list)
+    for f in find_src_files(root):
+        kind = is_parseable(f) and classify_generated(f)
+        if kind:
+            detected[kind].append(os.path.relpath(f, root).replace(os.sep, "/"))
+
     lines = [
         "# Files RepoMapper skips, in .gitignore syntax. Files ignored by git are skipped too.",
         "# Generated on first run; edit freely. Add vendored, bundled or generated files here.",
         "",
         *DEFAULT_IGNORE_PATTERNS,
     ]
-    if minified:
-        lines += ["", f"# Detected as minified (average line length > {MINIFIED_AVG_LINE_LENGTH}); remove any false positives", *minified]
+    for kind, heading in DETECTED_SECTIONS:
+        if detected[kind]:
+            lines += ["", f"# {heading}; remove any false positives", *sorted(detected[kind])]
     try:
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
