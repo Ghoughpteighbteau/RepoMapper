@@ -117,11 +117,48 @@ def test_force_refresh_reparses_cached_tags(tmp_path):
     fname = str(tmp_path / "a.ts")
     rm = make_repomap(tmp_path)
     stale = rm.get_tags(fname, "a.ts")
-    rm.TAGS_CACHE[fname] = {"mtime": rm.get_mtime(fname), "data": []}
+    rm.TAGS_CACHE[fname] = {"stamp": rm.get_file_stamp(fname), "extractor": repomap_class.extractor_fingerprint(), "data": []}
 
     assert rm.get_tags(fname, "a.ts") == []
     assert rm.get_tags(fname, "a.ts", force_refresh=True) == stale
     assert rm.get_tags(fname, "a.ts") == stale
+
+
+def poison_cache(rm, fname, **overrides):
+    entry = {"stamp": rm.get_file_stamp(fname), "extractor": repomap_class.extractor_fingerprint(), "data": []}
+    rm.TAGS_CACHE[fname] = {**entry, **overrides}
+
+
+def test_extractor_change_invalidates_cached_tags(tmp_path):
+    (tmp_path / "a.ts").write_text("export function foo() {}\n")
+    fname = str(tmp_path / "a.ts")
+    rm = make_repomap(tmp_path)
+    fresh = rm.get_tags(fname, "a.ts")
+    poison_cache(rm, fname, extractor="old-extractor")
+
+    assert rm.get_tags(fname, "a.ts") == fresh
+
+
+def test_same_mtime_size_change_invalidates_cached_tags(tmp_path):
+    path = tmp_path / "a.ts"
+    path.write_text("export function foo() {}\n")
+    fname = str(path)
+    rm = make_repomap(tmp_path)
+    poison_cache(rm, fname)
+    st = os.stat(fname)
+    path.write_text("export function foo() {}\nexport function bar() {}\n")
+    os.utime(fname, ns=(st.st_atime_ns, st.st_mtime_ns))  # mtime-preserving edit
+
+    assert {t.name for t in rm.get_tags(fname, "a.ts") if t.kind == "def"} == {"foo", "bar"}
+
+
+def test_legacy_mtime_entries_are_reparsed(tmp_path):
+    (tmp_path / "a.ts").write_text("export function foo() {}\n")
+    fname = str(tmp_path / "a.ts")
+    rm = make_repomap(tmp_path)
+    rm.TAGS_CACHE[fname] = {"mtime": os.path.getmtime(fname), "data": []}
+
+    assert rm.get_tags(fname, "a.ts") != []
 
 
 def test_tags_cache_goes_in_repomap_dir(tmp_path, monkeypatch):

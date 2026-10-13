@@ -104,7 +104,6 @@ async def repo_map(
     other_files: Optional[List[str]] = None,
     token_limit: Any = None,  # Accept any type to handle empty strings
     exclude_unranked: bool = False,
-    force_refresh: bool = False,
     mentioned_files: Optional[List[str]] = None,
     mentioned_idents: Optional[List[str]] = None,
     verbose: bool = False,
@@ -121,7 +120,6 @@ async def repo_map(
     :param other_files: A list of other relevant file paths in the repository to consider for the map. They receive a lower ranking boost than mentioned_files and chat_files.
     :param token_limit: The maximum number of tokens the generated repository map should occupy. Defaults to map.token_limit in .repomap/config.toml (8192).
     :param exclude_unranked: If True, files with a PageRank of 0.0 will be excluded from the map. Defaults to False.
-    :param force_refresh: If True, forces a refresh of the repository map cache. Defaults to False.
     :param mentioned_files: Optional list of file paths explicitly mentioned in the conversation and receive a mid-level ranking boost.
     :param mentioned_idents: Optional list of identifiers explicitly mentioned in the conversation, to boost their ranking.
     :param verbose: If True, enables verbose logging for the RepoMap generation process. Defaults to False.
@@ -210,8 +208,7 @@ async def repo_map(
             chat_files=abs_chat_files,
             other_files=abs_other_files,
             mentioned_fnames=mentioned_fnames_set,
-            mentioned_idents=mentioned_idents_set,
-            force_refresh=force_refresh
+            mentioned_idents=mentioned_idents_set
         )
         
         # Convert FileReport to dictionary for JSON serialization

@@ -114,7 +114,7 @@ Examples:
     parser.add_argument(
         "--force-refresh",
         action="store_true",
-        help="Force refresh of caches"
+        help=argparse.SUPPRESS  # escape hatch; the tags cache invalidates itself
     )
 
     parser.add_argument(

@@ -8,6 +8,10 @@ from pathlib import Path
 from collections import Counter, namedtuple, defaultdict
 from typing import List, Dict, Set, Optional, Tuple, Callable, Any, Union
 import bisect
+import functools
+import hashlib
+import importlib.metadata
+import inspect
 import math
 import shutil
 import sqlite3
@@ -58,6 +62,28 @@ CACHE_VERSION = 1
 
 TAGS_CACHE_DIR_DEFAULT = f"{CACHE_DIR}/tags.v{CACHE_VERSION}"
 TAGS_CACHE_DIR = TAGS_CACHE_DIR_DEFAULT  # tests point this elsewhere
+
+EXTRACTOR_PACKAGES = ("grep-ast", "tree-sitter", "tree-sitter-language-pack", "pygments")
+
+
+@functools.lru_cache(maxsize=None)
+def extractor_fingerprint() -> str:
+    """Hash of everything that determines a file's tags: the query files, the extraction code and parser
+    package versions. Cached tags from a different fingerprint are re-parsed, so editing any of these
+    invalidates the cache without bumping CACHE_VERSION."""
+    h = hashlib.sha256()
+    for scm in sorted((Path(__file__).parent / "queries").rglob("*.scm")):
+        h.update(str(scm.relative_to(Path(__file__).parent)).encode())
+        h.update(scm.read_bytes())
+    for fn in (RepoMap.get_tags_raw, RepoMap.get_pygments_refs, get_scm_fname):
+        h.update(inspect.getsource(fn).encode())
+    for pkg in EXTRACTOR_PACKAGES:
+        try:
+            h.update(f"{pkg}={importlib.metadata.version(pkg)}".encode())
+        except importlib.metadata.PackageNotFoundError:
+            h.update(f"{pkg}=missing".encode())
+    return h.hexdigest()
+
 
 # Personalization weights: chat files seed PageRank strongly, mentioned files less so.
 SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
@@ -205,36 +231,43 @@ class RepoMap:
         except ValueError:
             return fname
     
-    def get_mtime(self, fname: str) -> Optional[float]:
-        """Get file modification time."""
+    def get_file_stamp(self, fname: str) -> Optional[Tuple[int, int]]:
+        """(mtime_ns, size) of a file; a change in either means its cached tags are stale."""
         try:
-            return os.path.getmtime(fname)
+            st = os.stat(fname)
         except FileNotFoundError:
             self.output_handlers['warning'](f"File not found: {fname}")
             return None
-    
+        return (st.st_mtime_ns, st.st_size)
+
     def get_tags(self, fname: str, rel_fname: str, force_refresh: bool = False) -> List[Tag]:
-        """Get tags for a file, using cache when possible. force_refresh re-parses and overwrites the cache."""
-        file_mtime = self.get_mtime(fname)
-        if file_mtime is None:
+        """Get tags for a file, using cache when possible. force_refresh re-parses and overwrites the cache.
+
+        A cached entry is only used if both the file's stamp and the extractor fingerprint still match,
+        so edits and changes to tag extraction invalidate it without a manual refresh.
+        """
+        stamp = self.get_file_stamp(fname)
+        if stamp is None:
             return []
-        
+        fingerprint = extractor_fingerprint()
+
         if not force_refresh:
             try:
                 cached_entry = self.TAGS_CACHE.get(fname)
-                if cached_entry and cached_entry.get("mtime") == file_mtime:
+                if (cached_entry and cached_entry.get("stamp") == stamp
+                        and cached_entry.get("extractor") == fingerprint):
                     return cached_entry["data"]
             except SQLITE_ERRORS:
                 self.tags_cache_error()
 
-        # Cache miss, file changed, or forced refresh
+        # Cache miss, file changed, extractor changed, or forced refresh
         tags = self.get_tags_raw(fname, rel_fname)
         if fname in self.parse_errors:
             # Don't cache failures, so they're retried and reported on every run.
             return tags
 
         try:
-            self.TAGS_CACHE[fname] = {"mtime": file_mtime, "data": tags}
+            self.TAGS_CACHE[fname] = {"stamp": stamp, "extractor": fingerprint, "data": tags}
         except SQLITE_ERRORS:
             self.tags_cache_error()
         
