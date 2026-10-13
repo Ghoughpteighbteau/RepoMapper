@@ -294,6 +294,12 @@ Status, `replaced_by` and notes show on outline lines, and at the top of signatu
 that area. The nearest entry wins per key, so a child entry only overrides the keys it sets. Unknown keys or
 values and paths that don't exist are reported like config problems.
 
+When it's first created, `areas.toml` also lists the project's top-level directories (and the subdirectories of
+very large ones) as commented-out entries with hints: file count, languages, last commit, the first sentence of
+the directory's README, and a `legacy` suggestion for directories idle for over a year. Uncomment what's useful.
+Entries with many commits under their path since they were last edited (`git.stale_area_commits`, 100 by
+default) are reported so notes don't silently go out of date.
+
 ### Ignoring files
 
 Files ignored by git are skipped automatically. Everything else RepoMapper skips is listed in `.repomap/ignore`,

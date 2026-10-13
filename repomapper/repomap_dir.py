@@ -2,7 +2,8 @@
 import os
 from typing import List
 
-from repomapper.utils import REPOMAP_DIR, IGNORE_FILE, ignore_file_content
+from repomapper.utils import REPOMAP_DIR, IGNORE_FILE, ignore_file_content, find_src_files
+from repomapper.areas import starter_entries
 
 CACHE_DIR = f"{REPOMAP_DIR}/cache"
 
@@ -89,6 +90,7 @@ CONFIG_TEMPLATE = """\
 # history_years = 2             # how far back git history signals look
 # bulk_commit_files = 50        # commits touching more files are skipped (reformats, renames, bumps)
 # recency_half_life_days = 90
+# stale_area_commits = 100      # report areas.toml entries with this many commits under them since last edited
 """
 
 
@@ -101,7 +103,7 @@ def init_repomap_dir(root: str) -> List[str]:
         return []
     files = [
         (IGNORE_FILE, lambda: ignore_file_content(root)),
-        (f"{REPOMAP_DIR}/areas.toml", lambda: AREAS_TEMPLATE),
+        (f"{REPOMAP_DIR}/areas.toml", lambda: AREAS_TEMPLATE + starter_entries(root, find_src_files(root))),
         (f"{REPOMAP_DIR}/config.toml", lambda: CONFIG_TEMPLATE),
         (f"{REPOMAP_DIR}/.gitignore", lambda: GITIGNORE),
     ]

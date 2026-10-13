@@ -1,7 +1,12 @@
 """Hand-written hints from .repomap/areas.toml: importance, status and notes per path."""
+import json
 import os
+import re
+import subprocess
 import tomllib
+from collections import Counter
 from dataclasses import dataclass, field, fields
+from datetime import date, datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
 from repomapper.utils import REPOMAP_DIR
@@ -126,3 +131,105 @@ def load_areas(root: str) -> Areas:
                 setattr(entry, key, value)
         areas.entries[path] = entry
     return areas
+
+
+# --- Starter entries and staleness, both derived from the tree and git history ---
+
+BIG_AREA_FILES = 100      # top-level dirs with more files also get entries for their subdirectories
+IDLE_DAYS = 365           # dirs without commits for this long get a commented "legacy" suggestion
+MAX_NOTE_LENGTH = 120
+
+
+def _git(root: str, *args: str) -> Optional[str]:
+    try:
+        result = subprocess.run(["git", *args], cwd=root, capture_output=True, check=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip()
+
+
+def readme_sentence(directory: str) -> Optional[str]:
+    """First sentence of the first prose paragraph in the directory's README or CLAUDE.md."""
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.upper().startswith("README") or n == "CLAUDE.md")
+    except OSError:
+        return None
+    for name in names:
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8", errors="ignore") as f:
+                text = f.read(20_000)
+        except OSError:
+            continue
+        for para in re.split(r"\n\s*\n", text):
+            para = " ".join(para.split())
+            # Skip headings, badges, html, lists, code fences and tables
+            if not para or para[0] in "#[!<-*|>`=" or para[0].isdigit():
+                continue
+            sentence = re.split(r"(?<=[.!?])\s", para, maxsplit=1)[0]
+            return sentence if len(sentence) <= MAX_NOTE_LENGTH else sentence[:MAX_NOTE_LENGTH - 3] + "..."
+    return None
+
+
+def starter_entries(root: str, files: List[str]) -> str:
+    """Commented-out entries for the project's main areas, with hints derived from files and git."""
+    tree: Dict[str, List[str]] = {}
+    for f in files:
+        parts = normalize(os.path.relpath(f, root)).split("/")
+        if len(parts) > 1:
+            tree.setdefault(parts[0], []).append(f)
+            if len(parts) > 2:
+                tree.setdefault("/".join(parts[:2]), []).append(f)
+    areas = sorted(p for p in tree if "/" not in p or len(tree[p.split("/")[0]]) > BIG_AREA_FILES)
+    if not areas:
+        return ""
+
+    now = datetime.now(timezone.utc).date()
+    blocks = ["", "# Areas found in this project, with derived hints. Uncomment and fill in what's useful."]
+    for path in areas:
+        langs = Counter(os.path.splitext(f)[1].lstrip(".") or "?" for f in tree[path])
+        hint = f"{len(tree[path])} files ({', '.join(f'{l} {n}' for l, n in langs.most_common(3))})"
+        last = _git(root, "log", "-1", "--format=%cs", "--", path)
+        if last:
+            hint += f", last commit {last}"
+        lines = ["", f"# {path}: {hint}", f'# [paths."{path}"]', '# importance = "normal"']
+        if last and (now - date.fromisoformat(last)).days > IDLE_DAYS:
+            lines.append(f'# status = "legacy"  # suggestion only: no commits since {last}')
+        note = readme_sentence(os.path.join(root, path))
+        lines.append(f"# note = {json.dumps(note, ensure_ascii=False)}" if note else '# note = ""')
+        blocks += lines
+    return "\n".join(blocks) + "\n"
+
+
+ENTRY_HEADER = re.compile(r'^\s*\[\s*paths\.(?:"([^"]+)"|\'([^\']+)\'|([\w.-]+))\s*\]')
+
+
+def stale_entries(root: str, areas: Areas, min_commits: int) -> List[str]:
+    """Entries with at least min_commits commits under their path since the entry was last edited."""
+    blame = _git(root, "blame", "--line-porcelain", "--", AREAS_FILE)
+    if not blame or not areas.entries:
+        return []
+    times = [int(line.split()[1]) for line in blame.splitlines() if line.startswith("committer-time ")]
+    try:
+        with open(os.path.join(root, AREAS_FILE), encoding="utf-8") as f:
+            text_lines = f.read().splitlines()
+    except OSError:
+        return []
+
+    # Last edit of each entry: newest blame time among its lines, up to the next table header
+    edited: Dict[str, int] = {}
+    current = None
+    for line, time in zip(text_lines, times):
+        if line.lstrip().startswith("["):
+            m = ENTRY_HEADER.match(line)
+            current = normalize(next(g for g in m.groups() if g)) if m else None
+        if current is not None and line.strip() and not line.lstrip().startswith("#"):
+            edited[current] = max(edited.get(current, 0), time)
+
+    stale = []
+    for path, time in sorted(edited.items()):
+        count = _git(root, "rev-list", "--count", f"--since=@{time}", "HEAD", "--", path or ".")
+        if count and int(count) >= min_commits:
+            when = datetime.fromtimestamp(time, timezone.utc).date().isoformat()
+            stale.append(f'{AREAS_FILE}: paths."{path}" was last edited {when}, {count} commits under it since; '
+                         "check it's still accurate")
+    return stale

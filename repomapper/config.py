@@ -74,6 +74,7 @@ class GitConfig:
     history_years: int = 2
     bulk_commit_files: int = 50
     recency_half_life_days: int = 90
+    stale_area_commits: int = 100
 
 
 @dataclass
