@@ -4,7 +4,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 
 from repomapper.config import Config, GitConfig
-from repomapper.areas import Area, Areas, annotation, load_areas, readme_sentence, stale_entries, moved_tests_hint
+from repomapper.areas import Area, Areas, annotation, load_areas, readme_sentence, stale_entries, moved_tests_hint, TEST_GLOBS, TEST_GLOB_ENTRIES
 from repomapper.repomap_dir import AREAS_TEMPLATE, init_repomap_dir
 
 
@@ -223,3 +223,10 @@ def test_readme_sentence_skips_titles_fragments_and_later_sections(tmp_path):
 
     (tmp_path / "README.md").write_text("# Gateway\n\nRoutes traffic to the services.\n\n## More\n\nOther.\n")
     assert readme_sentence(str(tmp_path)) == "Routes traffic to the services."
+
+
+def test_starter_test_globs_cover_spec_files():
+    areas = Areas(globs={g: Area(kind="test") for g in TEST_GLOBS})
+    for path in ("lightship-auth_spec.js", "src/app.e2e-spec.ts", "src/app.spec.ts"):
+        assert areas.resolve(path).kind == "test", path
+    assert '[globs."*_spec.*"]' in TEST_GLOB_ENTRIES and '[globs."*-spec.*"]' in TEST_GLOB_ENTRIES

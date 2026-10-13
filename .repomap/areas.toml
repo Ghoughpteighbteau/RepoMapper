@@ -78,6 +78,14 @@ kind = "test"
 importance = "low"
 kind = "test"
 
+[globs."*_spec.*"]
+importance = "low"
+kind = "test"
+
+[globs."*-spec.*"]
+importance = "low"
+kind = "test"
+
 [globs."**/tests/**"]
 importance = "low"
 kind = "test"

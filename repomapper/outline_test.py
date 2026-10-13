@@ -1,6 +1,6 @@
 from repomapper.areas import Area, Areas
 from repomapper.config import OutlineConfig
-from repomapper.outline import OutlineFile, render_outline
+from repomapper.outline import HEADER, OutlineFile, render_outline
 from repomapper.utils import count_tokens
 
 
@@ -177,8 +177,19 @@ def test_test_and_config_files_are_counted_but_give_no_names_or_edges():
     assert "Dependencies" not in small
 
     large = render_outline(files, edges, 10_000, tokens, areas=TEST_GLOBS)
-    assert "a_test.py 50.0%\n" in large      # still listed, without names
+    assert "a_test.py" not in large and "karma.conf.js" not in large      # counted, never listed
     assert "test_real" not in large and "Dependencies" not in large
+
+
+def test_test_files_take_no_lines_or_budget_and_do_not_count_as_more_files():
+    files = {**leaf_files("pkg", 3, 0.1), **{f"pkg/t{i}_test.py": OutlineFile(0.01, []) for i in range(30)}}
+    out = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(files_per_dir=2), areas=TEST_GLOBS)
+    assert "pkg/  33 files (py 33; 30 test)" in out
+    assert "_test.py" not in out
+    assert "+1 more files" in out
+    # the lines the tests would have cost are free: this budget holds the directory open with its files
+    budget = (tokens(out) + tokens(HEADER)) * 5 // 4 + 1   # the header and a dependency reserve come off the top
+    assert render_outline(files, {}, budget, tokens, settings=OutlineConfig(files_per_dir=2), areas=TEST_GLOBS) == out
 
 
 def test_names_defined_in_many_directories_are_not_samples():

@@ -14,7 +14,7 @@ deepest common directory (`lib/types/: task.ts -> user.ts`). A directory's edges
 are left out.
 
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
-but give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
+but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
 minified files (definitions mostly single letters), and generic names (push, set, id) from config.
 
 Lines below MIN_SHOWN_RANK of the PageRank show no percentage. Git activity shows on directory lines, and
@@ -60,7 +60,8 @@ class Dir:
     name: str = ""                                     # label below its parent; "b/c/d" for a collapsed chain
     chain: List[str] = field(default_factory=list)     # paths of the dirs collapsed into this line ("a/b", "a/b/c")
     dirs: Dict[str, "Dir"] = field(default_factory=dict)
-    files: List[str] = field(default_factory=list)     # rel paths directly inside, highest rank first
+    files: List[str] = field(default_factory=list)     # rel paths directly inside, highest rank first; no kind files
+    hidden: List[str] = field(default_factory=list)    # test/config files directly inside: counted, never listed
     count: int = 0
     rank: float = 0.0
     langs: Counter = field(default_factory=Counter)
@@ -73,18 +74,18 @@ class Dir:
 
 
 def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}) -> Dir:
-    """Directory tree with totals; each file's defs should already be just its sample names."""
+    """Directory tree with totals (kind files are counted but not listed); each file's defs should already be just its sample names."""
     root = Dir("")
     for rel in files:
         node = root
         parts = rel.split("/")
         for i, part in enumerate(parts[:-1]):
             node = node.dirs.setdefault(part, Dir("/".join(parts[:i + 1])))
-        node.files.append(rel)
+        (node.hidden if rel in kinds else node.files).append(rel)
 
     def total(d: Dir):
         d.files.sort(key=lambda f: files[f].rank, reverse=True)
-        for f in d.files:
+        for f in d.files + d.hidden:
             d.count += 1
             d.rank += files[f].rank
             d.langs[os.path.splitext(f)[1].lstrip(".") or "?"] += 1
@@ -105,7 +106,7 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}) -> Dir
         merged = {}
         for name, sub in d.dirs.items():
             sub.name = sub.name or name
-            while not sub.files and len(sub.dirs) == 1:
+            while not sub.files and not sub.hidden and len(sub.dirs) == 1:
                 (child_name, child), = sub.dirs.items()
                 child.name = f"{sub.name}/{child.name or child_name}"
                 child.chain = sub.chain + [sub.path]
@@ -244,7 +245,7 @@ def render_outline(
 
     def lone_dir(d: Dir) -> bool:
         """The root holding nothing but one directory: its line would repeat that directory's."""
-        return not d.path and not d.files and len(d.dirs) == 1
+        return not d.path and not d.files and not d.hidden and len(d.dirs) == 1
 
     def render(open_dirs: Set[str], deps: List[Tuple[str, str, bool]] = ()) -> str:
         lines = [HEADER, ""]

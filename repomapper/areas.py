@@ -156,8 +156,8 @@ def load_areas(root: str) -> Areas:
 
 
 # Starter test globs, written into new areas.toml files and suggested for old [tests] sections
-TEST_GLOBS = ("*_test.*", "test_*.*", "*.spec.*", "*.test.*", "*Test.java", "*Tests.java", "*Test.kt",
-              "**/tests/**", "**/src/test/**", "**/__tests__/**", "conftest.py")
+TEST_GLOBS = ("*_test.*", "test_*.*", "*.spec.*", "*.test.*", "*_spec.*", "*-spec.*", "*Test.java",
+              "*Tests.java", "*Test.kt", "**/tests/**", "**/src/test/**", "**/__tests__/**", "conftest.py")
 TEST_GLOB_ENTRIES = "\n".join(f'[globs."{g}"]\nimportance = "low"\nkind = "test"\n' for g in TEST_GLOBS)
 
 
