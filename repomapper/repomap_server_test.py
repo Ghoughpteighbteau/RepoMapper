@@ -40,3 +40,14 @@ def test_search_respects_repomapignore(tmp_path):
     files = {r["file"] for r in search(project_root=str(tmp_path), query="interleave")["results"]}
 
     assert files == {"a.ts"}
+
+
+def test_first_search_creates_ignore_file_and_says_so(tmp_path):
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n")
+
+    first = search(project_root=str(tmp_path), query="interleave")["hint"]
+    second = search(project_root=str(tmp_path), query="interleave")["hint"]
+
+    assert (tmp_path / ".repomapignore").exists()
+    assert "Created .repomapignore" in first
+    assert "Created" not in second

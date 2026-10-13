@@ -8,7 +8,7 @@ import dataclasses
 
 from fastmcp import FastMCP, settings
 from repomapper.repomap_class import RepoMap
-from repomapper.utils import count_tokens, read_text, find_src_files
+from repomapper.utils import count_tokens, read_text, find_src_files, init_ignore_file
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -42,6 +42,15 @@ IGNORE_HINT = (
     "If results include vendored, minified, bundled or generated files that aren't useful, "
     "suggest the user add gitignore-style patterns for them to .repomapignore in the project root."
 )
+
+CREATED_HINT = (
+    "Created .repomapignore in the project root with default patterns and any files detected as minified. "
+    "Tell the user so they can review it and remove false positives."
+)
+
+
+def ignore_hint(created: bool) -> str:
+    return f"{CREATED_HINT} {IGNORE_HINT}" if created else IGNORE_HINT
 
 
 @mcp.tool()
@@ -86,6 +95,7 @@ async def repo_map(
     """
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
+    hint = ignore_hint(init_ignore_file(project_root))
 
     # 1. Handle and validate parameters
     # Convert token_limit to integer with fallback
@@ -166,7 +176,7 @@ async def repo_map(
         return {
             "map": map_content or "No repository map could be generated.",
             "report": report_dict,
-            "hint": IGNORE_HINT,
+            "hint": hint,
         }
     except Exception as e:
         log.exception(f"Error generating repository map for project '{project_root}': {e}")
@@ -210,6 +220,7 @@ async def search_identifiers(
     """
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
+    hint = ignore_hint(init_ignore_file(project_root))
 
     try:
         # Initialize RepoMap with search-specific settings
@@ -274,7 +285,7 @@ async def search_identifiers(
                     "context": context
                 })
 
-        return {"results": results, "hint": IGNORE_HINT}
+        return {"results": results, "hint": hint}
 
     except Exception as e:
         log.exception(f"Error searching identifiers in project '{project_root}': {e}")
