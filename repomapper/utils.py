@@ -79,6 +79,18 @@ DEFAULT_IGNORE_PATTERNS = [
 MINIFIED_AVG_LINE_LENGTH = 300
 
 
+def find_git_root(path: str) -> Optional[str]:
+    """Return the git repository root containing path, or None if it isn't in a repo."""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--show-toplevel'],
+            cwd=path, capture_output=True, check=True, text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
 def _git_files(directory: str) -> Optional[List[str]]:
     """List files under directory honoring .gitignore, or None if not in a git repo."""
     try:

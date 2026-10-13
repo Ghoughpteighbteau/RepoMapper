@@ -19,7 +19,7 @@ from grep_ast import TreeContext
 from pygments.lexers import guess_lexer_for_filename
 from pygments.token import Token
 from pygments.util import ClassNotFound
-from repomapper.utils import count_tokens, read_text, Tag
+from repomapper.utils import count_tokens, read_text, find_git_root, Tag
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -36,7 +36,7 @@ class FileReport:
 # Constants
 CACHE_VERSION = 1
 
-TAGS_CACHE_DIR = os.path.join(os.getcwd(), f".repomap.tags.cache.v{CACHE_VERSION}")
+TAGS_CACHE_DIR = f".repomap.tags.cache.v{CACHE_VERSION}"
 SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
 
 # Tag namedtuple for storing parsed code definitions and references
@@ -106,9 +106,14 @@ class RepoMap:
         # Load persistent tags cache
         self.load_tags_cache()
     
+    def tags_cache_dir(self) -> Path:
+        """The tags cache lives in the git root of the mapped project, else the cwd."""
+        base = find_git_root(str(self.root)) or os.getcwd()
+        return Path(base) / TAGS_CACHE_DIR
+
     def load_tags_cache(self):
         """Load the persistent tags cache."""
-        cache_dir = self.root / TAGS_CACHE_DIR
+        cache_dir = self.tags_cache_dir()
         try:
             self.TAGS_CACHE = diskcache.Cache(str(cache_dir))
         except Exception as e:
@@ -122,7 +127,7 @@ class RepoMap:
     def tags_cache_error(self):
         """Handle tags cache errors."""
         try:
-            cache_dir = self.root / TAGS_CACHE_DIR
+            cache_dir = self.tags_cache_dir()
             if cache_dir.exists():
                 shutil.rmtree(cache_dir)
             self.load_tags_cache()
@@ -173,25 +178,21 @@ class RepoMap:
             self.output_handlers['warning'](f"File not found: {fname}")
             return None
     
-    def get_tags(self, fname: str, rel_fname: str) -> List[Tag]:
-        """Get tags for a file, using cache when possible."""
+    def get_tags(self, fname: str, rel_fname: str, force_refresh: bool = False) -> List[Tag]:
+        """Get tags for a file, using cache when possible. force_refresh re-parses and overwrites the cache."""
         file_mtime = self.get_mtime(fname)
         if file_mtime is None:
             return []
         
-        try:
-            # Handle both diskcache Cache and in-memory dict
-            if isinstance(self.TAGS_CACHE, dict):
+        if not force_refresh:
+            try:
                 cached_entry = self.TAGS_CACHE.get(fname)
-            else:
-                cached_entry = self.TAGS_CACHE.get(fname)
-                
-            if cached_entry and cached_entry.get("mtime") == file_mtime:
-                return cached_entry["data"]
-        except SQLITE_ERRORS:
-            self.tags_cache_error()
-        
-        # Cache miss or file changed
+                if cached_entry and cached_entry.get("mtime") == file_mtime:
+                    return cached_entry["data"]
+            except SQLITE_ERRORS:
+                self.tags_cache_error()
+
+        # Cache miss, file changed, or forced refresh
         tags = self.get_tags_raw(fname, rel_fname)
         
         try:
@@ -220,7 +221,7 @@ class RepoMap:
         try:
             from grep_ast import filename_to_lang
             from grep_ast.tsl import get_language, get_parser
-            from tree_sitter import QueryCursor
+            from tree_sitter import Query, QueryCursor
         except ImportError:
             print("Error: grep-ast is required. Install with: pip install grep-ast")
             sys.exit(1)
@@ -252,7 +253,7 @@ class RepoMap:
             if not query_text:
                 return []
             
-            query = language.query(query_text)
+            query = Query(language, query_text)
             cursor = QueryCursor(query)
             captures = cursor.captures(tree.root_node)
             
@@ -300,7 +301,8 @@ class RepoMap:
         chat_fnames: List[str],
         other_fnames: List[str],
         mentioned_fnames: Optional[Set[str]] = None,
-        mentioned_idents: Optional[Set[str]] = None
+        mentioned_idents: Optional[Set[str]] = None,
+        force_refresh: bool = False
     ) -> Tuple[List[Tuple[float, Tag]], FileReport]:
         """Get ranked tags using PageRank algorithm with file report."""
         # Return empty list and empty report if no files
@@ -352,7 +354,7 @@ class RepoMap:
                 
             included.append(fname)
             
-            tags = self.get_tags(fname, rel_fname)
+            tags = self.get_tags(fname, rel_fname, force_refresh)
             
             for tag in tags:
                 if tag.kind == "def":
@@ -545,7 +547,7 @@ class RepoMap:
         
         result = self.get_ranked_tags_map_uncached(
             chat_fnames, other_fnames, max_map_tokens,
-            mentioned_fnames, mentioned_idents
+            mentioned_fnames, mentioned_idents, force_refresh
         )
         
         self.map_cache[cache_key] = result
@@ -557,11 +559,12 @@ class RepoMap:
         other_fnames: List[str],
         max_map_tokens: int,
         mentioned_fnames: Optional[Set[str]] = None,
-        mentioned_idents: Optional[Set[str]] = None
+        mentioned_idents: Optional[Set[str]] = None,
+        force_refresh: bool = False
     ) -> Tuple[Optional[str], FileReport]:
         """Generate the ranked tags map without caching."""
         ranked_tags, file_report = self.get_ranked_tags(
-            chat_fnames, other_fnames, mentioned_fnames, mentioned_idents
+            chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh
         )
         
         if not ranked_tags:

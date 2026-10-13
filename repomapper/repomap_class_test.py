@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from repomapper import repomap_class
@@ -105,3 +107,30 @@ def test_specific_identifiers_outrank_common_ones(tmp_path):
     rank = {tag.rel_fname: r for r, tag in ranked}
 
     assert rank["core.ts"] > rank["bundle.js"]
+
+
+def test_force_refresh_reparses_cached_tags(tmp_path):
+    (tmp_path / "a.ts").write_text("export function foo() {}\n")
+    fname = str(tmp_path / "a.ts")
+    rm = make_repomap(tmp_path)
+    stale = rm.get_tags(fname, "a.ts")
+    rm.TAGS_CACHE[fname] = {"mtime": rm.get_mtime(fname), "data": []}
+
+    assert rm.get_tags(fname, "a.ts") == []
+    assert rm.get_tags(fname, "a.ts", force_refresh=True) == stale
+    assert rm.get_tags(fname, "a.ts") == stale
+
+
+def test_tags_cache_goes_in_git_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", ".cache")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "sub").mkdir()
+
+    assert make_repomap(tmp_path / "sub").tags_cache_dir() == tmp_path.resolve() / ".cache"
+
+
+def test_tags_cache_falls_back_to_cwd(tmp_path, monkeypatch):
+    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", ".cache")
+    monkeypatch.chdir(tmp_path)
+
+    assert make_repomap(tmp_path).tags_cache_dir() == tmp_path / ".cache"

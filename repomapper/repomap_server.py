@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import os
@@ -8,7 +9,7 @@ import dataclasses
 
 from fastmcp import FastMCP, settings
 from repomapper.repomap_class import RepoMap
-from repomapper.utils import count_tokens, read_text, find_src_files, init_ignore_file
+from repomapper.utils import count_tokens, read_text, find_src_files, init_ignore_file, find_git_root
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -53,9 +54,20 @@ def ignore_hint(created: bool) -> str:
     return f"{CREATED_HINT} {IGNORE_HINT}" if created else IGNORE_HINT
 
 
+def resolve_project_root(root: Optional[str] = None) -> str:
+    """The explicit --root if given, else the git root of the cwd, else the cwd."""
+    if root:
+        return str(Path(root).resolve())
+    cwd = os.getcwd()
+    return str(Path(find_git_root(cwd) or cwd).resolve())
+
+
+# Resolved once at startup by main(); the project belongs to the session, not to each call.
+PROJECT_ROOT = resolve_project_root()
+
+
 @mcp.tool()
 async def repo_map(
-    project_root: str,
     chat_files: Optional[List[str]] = None,
     other_files: Optional[List[str]] = None,
     token_limit: Any = 8192,  # Accept any type to handle empty strings
@@ -67,13 +79,12 @@ async def repo_map(
     max_context_window: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Generate a repository map for the specified files, providing a list of function prototypes and variables for files as well as relevant related
-    files. Provide filenames relative to the project_root. In addition to the files provided, relevant related files will also be included with a
+    files. Provide filenames relative to the project root. In addition to the files provided, relevant related files will also be included with a
     very small ranking boost.
 
-    Files matching .gitignore or .repomapignore (gitignore syntax, in project_root) are skipped. If the map is
+    Files matching .gitignore or .repomapignore (gitignore syntax, in the project root) are skipped. If the map is
     dominated by vendored, minified, bundled or generated files, suggest adding them to .repomapignore.
 
-    :param project_root: Root directory of the project to search.  (must be an absolute path!)
     :param chat_files: A list of file paths that are currently in the chat context. These files will receive the highest ranking.
     :param other_files: A list of other relevant file paths in the repository to consider for the map. They receive a lower ranking boost than mentioned_files and chat_files.
     :param token_limit: The maximum number of tokens the generated repository map should occupy. Defaults to 8192.
@@ -93,6 +104,7 @@ async def repo_map(
             - 'total_files_considered': total files processed
         Or an 'error' key if an error occurred.
     """
+    project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint(init_ignore_file(project_root))
@@ -195,7 +207,6 @@ def truncate_lines(text: str, max_length: int) -> str:
 
 @mcp.tool()
 async def search_identifiers(
-    project_root: str,
     query: str,
     max_results: int = 50,
     context_lines: int = 2,
@@ -208,7 +219,6 @@ async def search_identifiers(
        minified or generated files, suggest adding them to .repomapignore.
 
     Args:
-        project_root: Root directory of the project to search.  (must be an absolute path!)
         query: Search query (identifier name)
         max_results: Maximum number of results to return
         context_lines: Number of lines of context to show
@@ -218,6 +228,7 @@ async def search_identifiers(
     Returns:
         Dictionary containing search results or error message
     """
+    project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint(init_ignore_file(project_root))
@@ -293,6 +304,15 @@ async def search_identifiers(
 
 # --- Main Entry Point ---
 def main():
+    global PROJECT_ROOT
+    parser = argparse.ArgumentParser(description="RepoMapper MCP server (stdio).")
+    parser.add_argument(
+        "--root",
+        help="Project root to map (default: git root of the current directory, else the current directory)",
+    )
+    args = parser.parse_args()
+    PROJECT_ROOT = resolve_project_root(args.root)
+
     # Run the MCP server
     log.debug("Starting FastMCP server...")
     mcp.run()

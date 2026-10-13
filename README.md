@@ -310,14 +310,18 @@ JSON-configured clients (Cline, Roo, Claude Desktop, Cursor, ...):
 
 ### Usage
 
-1. Running `repomap-mcp` directly starts the server and waits for a client on STDIO (it takes no arguments):
+1. Running `repomap-mcp` directly starts the server and waits for a client on STDIO:
 
 ```bash
-repomap-mcp
+repomap-mcp                     # maps the git root of the current directory (or the directory itself)
+repomap-mcp --root /path/to/project
 ```
 
 2. The server will start and listen for requests via STDIO.
-3. Other applications can then use the `repo_map` tool provided by the server to generate repository maps. They must specify the `project_root` parameter as an absolute path to the project they want to map.
+3. Other applications can then use the `repo_map` and `search_identifiers` tools. The project root is fixed when
+   the server starts, so tool calls don't pass it, and file paths in tool arguments are relative to it. Clients
+   that launch servers from the project directory (like Claude Code) need no configuration. Global clients
+   (like desktop apps) should pass `--root` in the server's `args`, one server per project.
 
 
 ## Changelog
