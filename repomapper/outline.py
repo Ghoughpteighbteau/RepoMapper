@@ -26,6 +26,15 @@ minified files (definitions mostly single letters), and generic names (push, set
 ordered by rank times ranking's identifier weight (names defined in many files down), a boost for classes,
 interfaces and types, and a penalty for short names.
 
+Non-code directories: a directory with no parseable file anywhere below it (`source/flyway/` migrations, `helm/`, `utils/bruno/`)
+is shown as one folded line, `source/flyway/  136 files (sql 136) — Flyway migrations`, with its areas.toml note. They
+have no PageRank share, samples, file lines or edges, and are left out of their parents' counts, languages and
+shares. Only the topmost such directory is a line (everything below it counts), unparseable files lying in a
+directory that also holds code are ignored, as are hidden paths (and, upstream, anything git or `.repomap/ignore`
+skips). To stay cheap, directories under PLAIN_DIR_MIN_FILES files are dropped, only the MAX_PLAIN_DIRS biggest
+are kept, together they may use PLAIN_BUDGET_SHARE of the token budget (biggest first; the root's own lines can't be
+trimmed later), and a parent lists them among its biggest subdirectories or under `+N more dirs` like any folded one.
+
 Lines below MIN_SHOWN_RANK of the PageRank show no percentage. Git activity shows on directory lines, and
 on file lines only for hot files (HOT_FILE_COMMITS in the last 90 days).
 """
@@ -47,6 +56,9 @@ LARGE_DIR_FRACTION = 0.1    # ...and this share of the repo's files; it always o
 LEFTOVER_MIN_WEIGHT = 0.1   # share of the siblings' weight a folded directory needs to get leftover budget
 MIN_SHOWN_RANK = 0.001     # lines with a smaller share of PageRank show no percentage
 HOT_FILE_COMMITS = 5       # file lines show git activity only with this many commits in the last 90 days
+MAX_PLAIN_DIRS = 12        # at most this many non-code directory lines in the whole outline, biggest first
+PLAIN_DIR_MIN_FILES = 3    # a non-code directory needs at least this many files to be shown
+PLAIN_BUDGET_SHARE = 0.15  # share of max_tokens all non-code directory lines may use
 DEP_LINE_TOKENS = 20   # budget reserved per dependency line while choosing which directories to open
 
 HEADER = (
@@ -77,14 +89,36 @@ class Dir:
     langs: Counter = field(default_factory=Counter)
     kinds: Counter = field(default_factory=Counter)    # areas.toml kind -> files ("test": 38)
     defs: List[Tuple[float, str]] = field(default_factory=list)
+    plain: bool = False                                # nothing parseable below: one folded line, not in its parents' totals
 
     @property
     def label(self) -> str:
         return (self.name or self.path.rsplit("/", 1)[-1] if self.path else ".") + "/"
 
 
-def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}) -> Dir:
-    """Directory tree with totals (kind files are counted but not listed); each file's defs should already be just its sample names."""
+def plain_dirs(files: Dict[str, OutlineFile], plain_files: List[str]) -> Dict[str, Counter]:
+    """Topmost directories holding unparseable files and nothing parseable below them -> files per extension.
+    Hidden paths, files directly in a directory with code, and directories with fewer than PLAIN_DIR_MIN_FILES
+    files are left out; only the MAX_PLAIN_DIRS biggest remain."""
+    code_dirs = {""}
+    for rel in files:
+        parts = rel.split("/")[:-1]
+        code_dirs.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+    found: Dict[str, Counter] = defaultdict(Counter)
+    for rel in plain_files:
+        parts = rel.split("/")
+        if any(part.startswith(".") for part in parts):
+            continue
+        top = next(("/".join(parts[:i]) for i in range(1, len(parts)) if "/".join(parts[:i]) not in code_dirs), None)
+        if top is not None:
+            found[top][os.path.splitext(rel)[1].lstrip(".") or "?"] += 1
+    big = [(sum(langs.values()), path) for path, langs in found.items() if sum(langs.values()) >= PLAIN_DIR_MIN_FILES]
+    return {path: found[path] for _n, path in sorted(big, key=lambda b: (-b[0], b[1]))[:MAX_PLAIN_DIRS]}
+
+
+def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain: Dict[str, Counter] = {}) -> Dir:
+    """Directory tree with totals (kind files are counted but not listed); each file's defs should already be just its sample names.
+    plain directories are leaves with their own count and languages, kept out of their parents' totals."""
     root = Dir("")
     for rel in files:
         node = root
@@ -92,8 +126,16 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}) -> Dir
         for i, part in enumerate(parts[:-1]):
             node = node.dirs.setdefault(part, Dir("/".join(parts[:i + 1])))
         (node.hidden if rel in kinds else node.files).append(rel)
+    for path, langs in plain.items():
+        node = root
+        parts = path.split("/")
+        for i, part in enumerate(parts[:-1]):
+            node = node.dirs.setdefault(part, Dir("/".join(parts[:i + 1])))
+        node.dirs[parts[-1]] = Dir(path, plain=True, count=sum(langs.values()), langs=Counter(langs))
 
     def total(d: Dir):
+        if d.plain:
+            return
         d.files.sort(key=lambda f: files[f].rank, reverse=True)
         for f in d.files + d.hidden:
             d.count += 1
@@ -104,6 +146,8 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}) -> Dir
             d.defs.extend(files[f].defs)
         for sub in d.dirs.values():
             total(sub)
+            if sub.plain:
+                continue
             d.count += sub.count
             d.rank += sub.rank
             d.langs.update(sub.langs)
@@ -192,6 +236,7 @@ def render_outline(
     importance: Dict[str, float] = IMPORTANCE_WEIGHTS,
     recent_commits: Callable[[str], Optional[int]] = lambda path: 0,
     weights: IdentifierWeightConfig = IdentifierWeightConfig(),
+    plain_files: List[str] = (),
 ) -> Optional[str]:
     """Render the outline, splitting max_tokens top-down among directories by size and importance."""
     if not files:
@@ -199,7 +244,8 @@ def render_outline(
     files_per_dir, max_edges = settings.files_per_dir, settings.max_edges
     kinds = {rel: kind for rel in files if (kind := areas.resolve(rel).kind)}
     files = sample_defs(files, kinds, settings, weights)
-    root = build_tree(files, kinds)
+    candidates = plain_dirs(files, plain_files)
+    root = build_tree(files, kinds, candidates)
     doc_cache: Dict[str, List[str]] = {}
 
     def doc_note(d: Dir) -> str:
@@ -229,6 +275,20 @@ def render_outline(
         note = activity(f) if (recent_commits(f) or 0) >= HOT_FILE_COMMITS else None
         return (f"{indent}{f.rsplit('/', 1)[-1]}{pct(files[f].rank)}" + (f", {note}" if note else "")
                 + (f": {names}" if names else "") + annotation(areas.entries.get(f)))
+
+    def plain_in(d: Dir) -> List[Dir]:
+        return [sub for s in d.dirs.values() for sub in ([s] if s.plain else plain_in(s))]
+
+    if candidates:
+        # Non-code lines get PLAIN_BUDGET_SHARE of max_tokens between them, biggest first, so they can't crowd out the rest
+        left, kept = max_tokens * PLAIN_BUDGET_SHARE, {}
+        for d in sorted(plain_in(root), key=lambda d: (-d.count, d.path)):
+            left -= token_count(folded_line(d, "  ")) + 1
+            if left >= 0:
+                kept[d.path] = candidates[d.path]
+        if len(kept) < len(candidates):
+            root = build_tree(files, kinds, kept)
+            doc_cache.clear()
 
     shown_cache: Dict[str, List[Dir]] = {}
     shown_limit: Dict[str, int] = {}   # fewer than dirs_per_dir for a large directory with a small budget
@@ -380,8 +440,8 @@ def render_outline(
         return out
 
     def folds(d: Dir) -> bool:
-        """Kept to one line: fold = true in areas.toml, or nothing but tests and configs inside."""
-        return bool(d.path) and (areas.resolve(d.path).fold or sum(d.kinds.values()) == d.count)
+        """Kept to one line: a non-code directory, fold = true in areas.toml, or nothing but tests and configs inside."""
+        return bool(d.path) and (d.plain or areas.resolve(d.path).fold or sum(d.kinds.values()) == d.count)
 
     depth_cache: Dict[str, int] = {"": 0}
 

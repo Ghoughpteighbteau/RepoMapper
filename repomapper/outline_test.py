@@ -1,6 +1,6 @@
 from repomapper.areas import Area, Areas
 from repomapper.config import IdentifierWeightConfig, OutlineConfig
-from repomapper.outline import HEADER, OutlineFile, render_outline
+from repomapper.outline import HEADER, MAX_PLAIN_DIRS, OutlineFile, render_outline
 from repomapper.utils import count_tokens
 
 
@@ -384,3 +384,51 @@ def test_edges_touching_legacy_or_deprecated_areas_are_dropped():
     assert "old/" not in deps and "lib/" not in deps and "ui/app/z.py -> api/s.py" in deps
     only = render_outline(AREAS, {("ui/app/z.py", "old/o.py"): 9.0}, 10_000, tokens, areas=areas)
     assert "Dependencies" not in only
+
+
+def plain(directory, n, ext="sql"):
+    return [f"{directory}/f{i}.{ext}" for i in range(n)]
+
+
+def test_directory_of_unparseable_files_is_a_count_only_line_with_its_note():
+    areas = Areas({"flyway": Area(note="Flyway migrations")})
+    out = render_outline(FILES, EDGES, 10_000, tokens, areas=areas, plain_files=plain("flyway", 6))
+    assert "flyway/  6 files (sql 6) — Flyway migrations\n" in out
+    assert "f0.sql" not in out
+
+
+def test_unparseable_files_in_a_directory_with_code_are_not_listed():
+    out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=["ui/data.json", "ui/more.json", "ui/x.json", "README.md"])
+    assert "json" not in out and "ui/  1 file (ts 1)" in out
+
+
+def test_non_code_directories_do_not_change_their_parents_counts_or_shares():
+    out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=plain("ui/migrations", 5))
+    assert "ui/  1 file (ts 1) 20.0%" in out
+    assert "migrations/  5 files (sql 5)" in out
+
+
+def test_non_code_directory_is_one_line_however_deep_and_has_no_share_or_edges():
+    out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=plain("helm/charts/api", 4, "yaml") + plain("helm", 3, "tpl"))
+    assert "helm/  7 files (yaml 4, tpl 3)\n" in out
+    assert "charts" not in out and "%" not in out.split("helm/")[1].split("\n")[0]
+
+
+def test_small_non_code_directories_and_all_but_the_biggest_few_are_dropped():
+    paths = plain("tiny", 2) + sum((plain(f"d{i:02}", 3 + i) for i in range(20)), [])
+    out = render_outline(FILES, EDGES, 100_000, tokens, plain_files=paths)
+    assert "tiny/" not in out
+    assert sum(1 for line in out.split("\n") if "(sql" in line) == MAX_PLAIN_DIRS
+    assert "d19/" in out and "d00/" not in out
+
+
+def test_non_code_lines_are_budgeted_like_other_lines():
+    paths = sum((plain(f"d{i:02}", 5) for i in range(10)), [])
+    small = render_outline(FILES, EDGES, 230, tokens, plain_files=paths)
+    assert tokens(small) <= 230
+    assert tokens(render_outline(FILES, EDGES, 10_000, tokens, plain_files=paths)) > tokens(small)
+
+
+def test_hidden_directories_are_skipped():
+    out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=plain(".github/workflows", 6, "yml"))
+    assert "github" not in out

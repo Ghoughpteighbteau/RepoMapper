@@ -390,3 +390,19 @@ def test_seeded_ranking_ignores_importance(tmp_path):
 
 def test_default_specific_identifier_weight_is_5():
     assert IdentifierWeightConfig().specific == 5.0
+
+
+def test_outline_shows_directories_of_unparseable_files(tmp_path):
+    files = make_project(tmp_path, {
+        "core.py": "def helper():\n    return 1\n",
+        "flyway/V1__a.sql": "create table a (id int);\n",
+        "flyway/V2__b.sql": "create table b (id int);\n",
+        "flyway/V3__c.sql": "create table c (id int);\n",
+        ".github/workflows/a.yml": "a: 1\n", ".github/workflows/b.yml": "a: 1\n", ".github/workflows/c.yml": "a: 1\n",
+    })
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."flyway"]\nnote = "Flyway migrations"\n')
+    out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
+
+    assert "flyway/  3 files (sql 3) — Flyway migrations" in out
+    assert "V1__a.sql" not in out and "github" not in out

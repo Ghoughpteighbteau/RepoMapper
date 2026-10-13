@@ -626,6 +626,8 @@ class RepoMap:
             return None, ranking.report
 
         files = {}
+        plain_files = [self.get_rel_fname(fname) for fname in other_fnames
+                       if not is_parseable(fname) and os.path.isfile(fname)]
         for fname in ranking.included:
             rel_fname = self.get_rel_fname(fname)
             if not is_parseable(fname):
@@ -663,7 +665,7 @@ class RepoMap:
         importance = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
         return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
                               activity, importance, recent_commits,
-                              ranking_config.identifier_weight), ranking.report
+                              ranking_config.identifier_weight, plain_files), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""
