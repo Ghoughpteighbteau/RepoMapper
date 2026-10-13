@@ -13,6 +13,13 @@ displayed nodes show which areas depend on which: `a <-> b` when both ways, and 
 deepest common directory (`lib/types/: task.ts -> user.ts`). A directory's edges to its own listed files
 are left out.
 
+Edge stopgaps (until import-based edges): a file's top-level area is its top-level directory, then down
+through directories without files of their own (`source/`, `source/ui/`) to the first that has some
+(`source/ui/src/`). An edge between two parts of one area is internal and dropped, unless no edge crosses
+areas (then the internal ones show as before). Crossing edges end at the area instead of a folder inside it
+(files directly in the area keep their name), so sibling-folder pairs merge into one line and free slots.
+Edges touching files areas.toml marks legacy or deprecated are dropped (both directions, internal or not).
+
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
 but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
 minified files (definitions mostly single letters), and generic names (push, set, id) from config.
@@ -283,20 +290,54 @@ def render_outline(
     def contains(node: str, other: str) -> bool:
         return node == "./" or (node.endswith("/") and other.startswith(node))
 
+    area_cache: Dict[str, str] = {}
+
+    def area_of(rel: str) -> str:
+        """The top-level area of a file: its top-level directory, then down through directories holding no
+        files of their own (`source/`, `source/ui/`) to the first that does. "" for a file in the root."""
+        if rel not in area_cache:
+            def child(d: Dir) -> Optional[Dir]:
+                return next((s for s in d.dirs.values() if rel.startswith(s.path + "/")), None)
+
+            d = child(root)
+            while d is not None and not d.files and child(d):
+                d = child(d)
+            area_cache[rel] = d.path if d is not None else ""
+        return area_cache[rel]
+
+    def in_area(node: str, area: str) -> str:
+        """node, or its area when node is a folder or file below a subfolder of that area."""
+        if not area or node == area + "/" or posixpath.dirname(node) == area:
+            return node
+        return area + "/"
+
     def dependencies(open_dirs: Set[str]) -> List[Tuple[str, str, bool]]:
         """(a, b, both ways) for the strongest edges; a reverse pair is one entry, ordered by its stronger
-        direction, and a directory's edges with nodes inside it (files directly in it vs a listed one) are dropped."""
+        direction, and a directory's edges with nodes inside it (files directly in it vs a listed one) are dropped.
+        Edges touching legacy or deprecated files are dropped. An edge between two parts of one top-level area is
+        internal: dropped unless nothing crosses areas. Crossing edges end at the area, not at a folder inside it."""
         weights: Dict[Tuple[str, str], float] = defaultdict(float)
+        internal: Dict[Tuple[str, str], float] = defaultdict(float)
         nodes: Dict[str, str] = {}
         for (src, dst), w in edges.items():
             if src in kinds or dst in kinds:
+                continue
+            if any(areas.resolve(rel).status in ("legacy", "deprecated") for rel in (src, dst)):
                 continue
             for rel in (src, dst):
                 if rel not in nodes:
                     nodes[rel] = node_of(rel, open_dirs)
             a, b = nodes[src], nodes[dst]
-            if a != b and not contains(a, b) and not contains(b, a):
+            if a == b or contains(a, b) or contains(b, a):
+                continue
+            area_a, area_b = area_of(src), area_of(dst)
+            if area_a and area_a == area_b:
+                internal[(a, b)] += w
+                continue
+            a, b = in_area(a, area_a), in_area(b, area_b)
+            if a != b:
                 weights[(a, b)] += w
+        weights = weights or internal
         merged: Dict[frozenset, Tuple[float, str, str, bool]] = {}
         for (a, b), w in weights.items():
             key = frozenset((a, b))

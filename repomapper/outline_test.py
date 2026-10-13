@@ -145,10 +145,12 @@ def test_directory_does_not_point_at_its_own_listed_file():
 
 
 def test_edge_labels_are_relative_to_their_common_directory():
-    edges = {("lib/types/task.ts", "lib/types/user.ts"): 2.0, ("ui/app.ts", "lib/types/user.ts"): 1.0}
+    edges = {("lib/types/task.ts", "lib/types/user.ts"): 2.0}
     out = render_outline(FILES, edges, 10_000, tokens)
-    assert "  lib/types/: task.ts -> user.ts\n" in out
-    assert "  ui/app.ts -> lib/types/user.ts" in out
+    assert "  lib/types/: task.ts -> user.ts" in out   # only internal edges exist, so they show
+    grouped = {"web/ui/a.ts": OutlineFile(0.5, [(0.5, "A")]), "web/api/b.ts": OutlineFile(0.5, [(0.5, "B")])}
+    out = render_outline(grouped, {("web/ui/a.ts", "web/api/b.ts"): 1.0}, 10_000, tokens)
+    assert "  web/: ui/a.ts -> api/b.ts" in out   # `web/` holds no files, so ui and api are separate areas
 
 
 def test_lone_top_level_dir_is_not_repeated_by_a_root_line():
@@ -312,3 +314,48 @@ def test_file_lines_show_activity_only_when_hot():
     out = render_outline(FILES, EDGES, 10_000, tokens, activity=notes.get, recent_commits=recent.get)
     assert "user.ts 50.0%, 9 commits/90d, last 1d: User, UserId" in out
     assert "task.ts 20.0%: Task" in out and "80d" not in out
+
+
+AREAS = {
+    "ui/app/z.py": OutlineFile(0.2, [(0.2, "Z")]),
+    "ui/app/a/x.py": OutlineFile(0.2, [(0.2, "X")]),
+    "ui/app/b/y.py": OutlineFile(0.2, [(0.2, "Y")]),
+    "api/s.py": OutlineFile(0.2, [(0.2, "S")]),
+    "lib/m.py": OutlineFile(0.2, [(0.2, "M")]),
+    "old/o.py": OutlineFile(0.1, [(0.1, "O")]),
+}
+
+
+def test_edges_inside_one_top_level_area_are_dropped_when_others_exist():
+    edges = {("ui/app/a/x.py", "ui/app/b/y.py"): 9.0, ("api/s.py", "lib/m.py"): 1.0}
+    out = render_outline(AREAS, edges, 10_000, tokens)
+    assert "api/s.py -> lib/m.py" in out
+    assert "a/x.py" not in out.split("Dependencies")[1]
+
+
+def test_edges_inside_one_area_show_when_they_are_all_there_is():
+    out = render_outline(AREAS, {("ui/app/a/x.py", "ui/app/b/y.py"): 9.0}, 10_000, tokens)
+    assert "ui/app/: a/x.py -> b/y.py" in out
+
+
+def test_edges_from_sibling_folders_collapse_to_their_area_and_free_slots():
+    edges = {("ui/app/a/x.py", "api/s.py"): 3.0, ("ui/app/b/y.py", "api/s.py"): 2.0, ("ui/app/a/x.py", "lib/m.py"): 1.0}
+    out = render_outline(AREAS, edges, 10_000, tokens, settings=OutlineConfig(max_edges=2))
+    deps = out.split("Dependencies")[1]
+    assert "  ui/app/ -> api/s.py\n" in deps
+    assert "  ui/app/ -> lib/m.py" in deps
+
+
+def test_files_directly_in_an_area_keep_their_name_in_edges():
+    out = render_outline(AREAS, {("ui/app/z.py", "api/s.py"): 1.0}, 10_000, tokens)
+    assert "  ui/app/z.py -> api/s.py" in out
+
+
+def test_edges_touching_legacy_or_deprecated_areas_are_dropped():
+    areas = Areas({"old": Area(status="legacy"), "lib": Area(status="deprecated")})
+    edges = {("ui/app/z.py", "old/o.py"): 9.0, ("lib/m.py", "api/s.py"): 8.0, ("ui/app/z.py", "api/s.py"): 1.0}
+    out = render_outline(AREAS, edges, 10_000, tokens, areas=areas)
+    deps = out.split("Dependencies")[1]
+    assert "old/" not in deps and "lib/" not in deps and "ui/app/z.py -> api/s.py" in deps
+    only = render_outline(AREAS, {("ui/app/z.py", "old/o.py"): 9.0}, 10_000, tokens, areas=areas)
+    assert "Dependencies" not in only
