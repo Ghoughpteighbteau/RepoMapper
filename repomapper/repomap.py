@@ -13,28 +13,10 @@ import sys
 from pathlib import Path
 from typing import List
 
-from repomapper.utils import count_tokens, read_text, Tag
+from repomapper.utils import count_tokens, read_text, Tag, find_src_files
 from repomapper.scm import get_scm_fname
 from repomapper.importance import is_important, filter_important_files
 from repomapper.repomap_class import RepoMap
-
-
-def find_src_files(directory: str) -> List[str]:
-    """Find source files in a directory."""
-    if not os.path.isdir(directory):
-        return [directory] if os.path.isfile(directory) else []
-    
-    src_files = []
-    for root, dirs, files in os.walk(directory):
-        # Skip hidden directories and common non-source directories
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'node_modules', '__pycache__', 'venv', 'env'}]
-        
-        for file in files:
-            if not file.startswith('.'):
-                full_path = os.path.join(root, file)
-                src_files.append(full_path)
-    
-    return src_files
 
 
 def tool_output(*messages):
@@ -197,7 +179,7 @@ Examples:
     
     # Generate the map
     try:
-        map_content = repo_map.get_repo_map(
+        map_content, _report = repo_map.get_repo_map(
             chat_files=chat_files,
             other_files=other_files,
             mentioned_fnames=mentioned_fnames,

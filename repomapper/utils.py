@@ -3,6 +3,7 @@ Utility functions for RepoMap.
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, List
@@ -56,3 +57,47 @@ def read_text(filename: str, encoding: str = "utf-8", silent: bool = False) -> O
         if not silent:
             print(f"An unexpected error occurred while reading {filename}: {e}")
         return None
+
+
+SKIP_DIRS = {'node_modules', '__pycache__', 'venv', 'env'}
+
+
+def _git_files(directory: str) -> Optional[List[str]]:
+    """List files under directory honoring .gitignore, or None if not in a git repo."""
+    try:
+        result = subprocess.run(
+            ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+            cwd=directory, capture_output=True, check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    files = []
+    for rel in result.stdout.decode('utf-8', 'surrogateescape').split('\0'):
+        if not rel:
+            continue
+        parts = Path(rel).parts
+        if any(p.startswith('.') or p in SKIP_DIRS for p in parts):
+            continue
+        full_path = os.path.join(directory, rel)
+        if os.path.isfile(full_path):
+            files.append(full_path)
+    return files
+
+
+def find_src_files(directory: str) -> List[str]:
+    """Find source files in a directory, skipping files ignored by git."""
+    if not os.path.isdir(directory):
+        return [directory] if os.path.isfile(directory) else []
+
+    git_files = _git_files(directory)
+    if git_files is not None:
+        return git_files
+
+    src_files = []
+    for root, dirs, files in os.walk(directory):
+        # Skip hidden directories and common non-source directories
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in SKIP_DIRS]
+        for file in files:
+            if not file.startswith('.'):
+                src_files.append(os.path.join(root, file))
+    return src_files

@@ -8,21 +8,9 @@ import dataclasses
 
 from fastmcp import FastMCP, settings
 from repomapper.repomap_class import RepoMap
-from repomapper.utils import count_tokens, read_text
+from repomapper.utils import count_tokens, read_text, find_src_files
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
-
-# Helper function from your CLI, useful to have here
-def find_src_files(directory: str) -> List[str]:
-    if not os.path.isdir(directory):
-        return [directory] if os.path.isfile(directory) else []
-    src_files = []
-    for r, d, f_list in os.walk(directory):
-        d[:] = [d_name for d_name in d if not d_name.startswith('.') and d_name not in {'node_modules', '__pycache__', 'venv', 'env'}]
-        for f in f_list:
-            if not f.startswith('.'):
-                src_files.append(os.path.join(r, f))
-    return src_files
 
 # Configure logging - only show errors
 root_logger = logging.getLogger()

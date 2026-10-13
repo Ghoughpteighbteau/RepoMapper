@@ -29,7 +29,7 @@ class FileReport:
 
 
 # Constants
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 TAGS_CACHE_DIR = os.path.join(os.getcwd(), f".repomap.tags.cache.v{CACHE_VERSION}")
 SQLITE_ERRORS = (sqlite3.OperationalError, sqlite3.DatabaseError)
