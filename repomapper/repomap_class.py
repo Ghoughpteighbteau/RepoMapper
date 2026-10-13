@@ -664,10 +664,11 @@ class RepoMap:
 
         history = self.history()
         activity = history.describe if history else (lambda path: None)
+        recent_commits = history.recent_commits if history else (lambda path: 0)
         ranking_config = self.config.ranking
         importance = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
         return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
-                              activity, importance), ranking.report
+                              activity, importance, recent_commits), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""

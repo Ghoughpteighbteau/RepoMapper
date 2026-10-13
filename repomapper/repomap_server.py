@@ -12,7 +12,7 @@ from repomapper.repomap_class import RepoMap
 from repomapper.utils import count_tokens, read_text, find_src_files, find_git_root
 from repomapper.repomap_dir import init_repomap_dir
 from repomapper.config import load_config
-from repomapper.areas import load_areas, stale_entries
+from repomapper.areas import load_areas, moved_tests_hint, stale_entries
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -143,7 +143,8 @@ async def repo_map(
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
     config, areas = load_config(project_root), load_areas(project_root)
-    warnings = config.warnings + areas.warnings + stale_entries(project_root, areas, config.git)
+    warnings = (config.warnings + moved_tests_hint(config, areas) + areas.warnings
+                + stale_entries(project_root, areas, config.git))
 
     # 1. Handle and validate parameters
     # Convert token_limit to integer, falling back to the configured default
@@ -275,7 +276,8 @@ async def search_identifiers(
         return {"error": f"Project root directory not found: {project_root}"}
     hint = ignore_hint()
     config, areas = load_config(project_root), load_areas(project_root)
-    warnings = config.warnings + areas.warnings + stale_entries(project_root, areas, config.git)
+    warnings = (config.warnings + moved_tests_hint(config, areas) + areas.warnings
+                + stale_entries(project_root, areas, config.git))
 
     try:
         # Initialize RepoMap with search-specific settings

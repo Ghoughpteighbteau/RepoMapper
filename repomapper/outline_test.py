@@ -18,15 +18,15 @@ EDGES = {("ui/app.ts", "lib/types/user.ts"): 3.0, ("ui/app.ts", "lib/types/task.
 
 
 def test_small_budget_folds_directories_to_one_line():
-    out = render_outline(FILES, EDGES, 150, tokens)
-    assert "lib/  2 files (ts 2) 70.0%: User, Task, UserId" in out
+    out = render_outline(FILES, EDGES, 167, tokens)
+    assert "lib/types/  2 files (ts 2) 70.0%: User, Task, UserId" in out
     assert "user.ts" not in out
-    assert "ui/ -> lib/" in out
+    assert "ui/ -> lib/types/" in out
 
 
 def test_directory_too_big_to_open_stays_folded_and_smaller_ones_open():
-    out = render_outline(FILES, EDGES, 215, tokens)
-    assert "lib/  2 files" in out and "user.ts" not in out
+    out = render_outline(FILES, EDGES, 230, tokens)
+    assert "lib/types/  2 files" in out and "user.ts" not in out
     assert "app.ts 20.0%: App" in out
     assert "legacy.js 10.0%: init" in out   # every top-level area opens a level before lib/ goes deeper
 
@@ -64,14 +64,14 @@ def test_area_notes_and_status_show_on_their_lines():
 
 def test_folded_area_stays_one_line_with_room_to_spare():
     out = render_outline(FILES, EDGES, 10_000, tokens, areas=Areas({"lib": Area(fold=True)}))
-    assert "lib/  2 files" in out
+    assert "lib/types/  2 files" in out
     assert "user.ts" not in out
 
 
 def test_directory_lines_show_git_activity():
-    notes = {"lib": "3 commits/90d, last 2d", "front_end": "idle 3y"}
+    notes = {"lib/types": "3 commits/90d, last 2d", "front_end": "idle 3y"}
     out = render_outline(FILES, EDGES, 10_000, tokens, activity=notes.get)
-    assert "lib/  2 files (ts 2) 70.0%, 3 commits/90d, last 2d" in out
+    assert "lib/types/  2 files (ts 2) 70.0%, 3 commits/90d, last 2d" in out
     assert "front_end/  1 file (js 1) 10.0%, idle 3y" in out
     assert "ui/  1 file (ts 1) 20.0%\n" in out or "ui/  1 file (ts 1) 20.0%:" in out
 
@@ -93,7 +93,7 @@ SERVICES = {
 def test_popular_small_dir_does_not_starve_big_unreferenced_one():
     out = render_outline(SERVICES, {}, 500, tokens)
     assert "handlers/  12 files" in out and "db/  12 files" in out
-    assert "ui/  8 files" in out
+    assert "ui/app/shell/  8 files" in out
 
 
 def test_importance_tilts_the_split():
@@ -125,8 +125,8 @@ def test_importance_weights_are_configurable():
     files = {**leaf_files("x/a/deep", 5, 0.01), **leaf_files("x/b", 5, 0.01),
              **leaf_files("y/a/deep", 7, 0.1), **leaf_files("y/b", 7, 0.1)}
     areas = Areas({"x": Area(importance="core")})
-    flat = render_outline(files, {}, 500, tokens, areas=areas, importance={"core": 1.0, "normal": 1.0, "low": 1.0})
-    tilted = render_outline(files, {}, 500, tokens, areas=areas)
+    flat = render_outline(files, {}, 450, tokens, areas=areas, importance={"core": 1.0, "normal": 1.0, "low": 1.0})
+    tilted = render_outline(files, {}, 450, tokens, areas=areas)
     assert flat != tilted
 
 
@@ -211,3 +211,93 @@ def test_directories_of_only_test_files_stay_folded():
     assert "\n  tests/  10 files (py 10; 10 test) 10.0%\n" in out
     assert "unit/" not in out
     assert "src_0" in out
+
+
+# The `services` feedback: one huge, wide, popular dir (web/src/app/, 30 domain folders) next to small deep
+# Java-style services whose code sits under single-child chains (src/main/java/com/acme/<svc>/)
+def java_service(name, packages, rank):
+    files = {}
+    for pkg, n in packages.items():
+        for i in range(n):
+            files[f"{name}/src/main/java/com/acme/{name}/{pkg}/C{pkg}{i}.java"] = OutlineFile(rank, [(rank, f"{name}_{pkg}_{i}")])
+    return files
+
+
+WIDE = {
+    **{rel: f for d in range(30) for rel, f in leaf_files(f"web/src/app/domain{d:02}", 20 + d, 0.0005).items()},
+    **leaf_files("web/src/libs", 3, 0.0001),
+    **java_service("email", {"domain": 6, "utils": 6, "service": 6, "exceptions": 3}, 0.0001),
+    **java_service("cas", {"auth": 3, "web": 2}, 0.0001),
+}
+
+
+def test_wide_popular_dir_opens_before_small_deep_ones_open_to_files():
+    out = render_outline(WIDE, {}, 900, tokens)
+    assert "app/  " in out and "domain29/  49 files" in out    # biggest children listed folded
+    assert "more dirs" in out
+    assert ".java" not in out                                     # email/ and cas/ don't open down to files
+
+
+def test_large_dir_opens_a_level_even_when_fully_opening_is_expensive():
+    # The budget can't fit app/ with its files or all 12 children; it still lists its biggest few
+    out = render_outline(WIDE, {}, 600, tokens)
+    assert "domain29/  49 files" in out
+    assert "more dirs" in out
+
+
+def test_small_light_sibling_does_not_get_the_leftover_budget():
+    files = {**{rel: f for d in range(20) for rel, f in leaf_files(f"big/d{d:02}", 30, 0.001).items()},
+             **leaf_files("tiny", 3, 0.0001)}
+    out = render_outline(files, {}, 700, tokens)
+    assert "tiny/  3 files" in out
+    assert "tiny/f0.py" not in out and "\n  f0.py" not in out and "  f0.py 0.0%: tiny_0" not in out
+
+
+def test_single_child_chains_collapse_into_one_line():
+    out = render_outline(WIDE, {}, 20_000, tokens)
+    assert "java/com/acme/email/  21 files" in out
+    assert "\n        com/" not in out and "  acme/  " not in out
+    assert "domain/  6 files" in out    # still opens below the chain
+
+
+def test_chain_at_top_collapses_and_edges_use_full_paths():
+    files = {"solo/a/b/x.py": OutlineFile(0.5, [(0.5, "x")]), "other/y.py": OutlineFile(0.5, [(0.5, "y")]),
+             "other/z.py": OutlineFile(0.0, [(0.0, "z")])}
+    out = render_outline(files, {("other/y.py", "solo/a/b/x.py"): 1.0}, 10_000, tokens)
+    assert "\nsolo/a/b/  1 file (py 1) 50.0%" in out or "\n  solo/a/b/  1 file (py 1) 50.0%" in out
+    assert "  a/  " not in out
+    assert "other/y.py -> solo/a/b/x.py" in out
+    folded = render_outline(files, {("other/y.py", "solo/a/b/x.py"): 1.0}, 140, tokens)
+    assert "solo/a/b/  1 file" in folded
+    assert "-> solo/a/b/" in folded
+
+
+def test_collapsed_chain_keeps_docs_and_notes_of_its_upper_dirs():
+    files = {"svc/src/main/a.py": OutlineFile(0.5, [(0.5, "a")]), "svc/src/main/b.py": OutlineFile(0.5, [(0.5, "b")])}
+    areas = Areas({"svc": Area(note="mail service")})
+    out = render_outline(files, {}, 10_000, tokens, areas=areas, docs=lambda d: ["README.md"] if d == "svc" else [])
+    assert "svc/src/main/  2 files (py 2) 100.0%  [svc/README.md] — mail service" in out
+
+
+def test_generic_builtin_names_are_not_samples():
+    files = {"lib/queue.ts": OutlineFile(1.0, [(0.5, "push"), (0.3, "set"), (0.2, "JobQueue"), (0.1, "id")])}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "queue.ts 100.0%: JobQueue\n" in out or out.endswith("queue.ts 100.0%: JobQueue")
+    kept = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(generic_names=[]))
+    assert "queue.ts 100.0%: push, set, JobQueue, id" in kept
+
+
+def test_rank_below_a_tenth_of_a_percent_is_hidden():
+    files = {"a/big.py": OutlineFile(0.9995, [(0.9, "Big")]), "a/tiny.py": OutlineFile(0.0005, [(0.0005, "Tiny")])}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "\n  tiny.py: Tiny" in out
+    assert "big.py 100.0%: Big" in out
+    assert "0.1%" in out.splitlines()[0]
+
+
+def test_file_lines_show_activity_only_when_hot():
+    notes = {"lib/types/user.ts": "9 commits/90d, last 1d", "lib/types/task.ts": "1 commit/90d, last 80d"}
+    recent = {"lib/types/user.ts": 9, "lib/types/task.ts": 1}
+    out = render_outline(FILES, EDGES, 10_000, tokens, activity=notes.get, recent_commits=recent.get)
+    assert "user.ts 50.0%, 9 commits/90d, last 1d: User, UserId" in out
+    assert "task.ts 20.0%: Task" in out and "80d" not in out

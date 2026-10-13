@@ -16,7 +16,7 @@ from typing import List
 from repomapper.utils import count_tokens, read_text, Tag, find_src_files
 from repomapper.repomap_dir import init_repomap_dir
 from repomapper.config import load_config
-from repomapper.areas import load_areas, stale_entries
+from repomapper.areas import load_areas, moved_tests_hint, stale_entries
 from repomapper.scm import get_scm_fname
 from repomapper.importance import is_important, filter_important_files
 from repomapper.repomap_class import RepoMap
@@ -174,7 +174,7 @@ Examples:
     # Create RepoMap instance
     config, areas = load_config(str(root_path)), load_areas(str(root_path))
     stale = stale_entries(str(root_path), areas, config.git)
-    for warning in config.warnings + areas.warnings + stale:
+    for warning in config.warnings + moved_tests_hint(config, areas) + areas.warnings + stale:
         tool_warning(warning)
     repo_map = RepoMap(
         map_tokens=args.map_tokens or config.map.token_limit,

@@ -67,13 +67,17 @@ class History:
         half_life = max(half_life_days, 1) * DAY
         return sum(0.5 ** ((self.now - when) / half_life) for when in self._file_times.get(rel_fname, ()))
 
+    def recent_commits(self, path: str) -> int:
+        """Non-bulk commits touching path in the last RECENT_DAYS."""
+        return self._recent.get(path.strip("/"), 0)
+
     def describe(self, path: str) -> Optional[str]:
         """Short activity note for an outline line: '12 commits/90d, last 3d', 'last 5mo' or 'idle 2y'."""
         last = self.last_commit(path)
         if last is None:
             return None if self.shallow else f"idle >{age((self.now - self.since) // DAY)}"
         days = (self.now - last) // DAY
-        recent = self._recent.get(path.strip("/"), 0)
+        recent = self.recent_commits(path)
         if recent:
             return f"{recent} commit{'' if recent == 1 else 's'}/{RECENT_DAYS}d, last {age(days)}"
         return f"idle {age(days)}" if days >= IDLE_DAYS else f"last {age(days)}"

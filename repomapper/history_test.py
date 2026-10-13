@@ -26,6 +26,7 @@ def test_describe_dirs_by_recent_commits_and_last_change():
     assert h.describe("old") == "idle 13mo"
     assert h.describe("gone") == "idle >2y"
     assert h.describe("src/a.py") == "1 commit/90d, last 3d"
+    assert (h.recent_commits("src"), h.recent_commits("src/a.py"), h.recent_commits("old")) == (2, 1, 0)
 
 
 def test_bulk_commits_skip_activity_but_count_for_staleness():

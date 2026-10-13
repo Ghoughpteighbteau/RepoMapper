@@ -59,6 +59,8 @@ class OutlineConfig:
     max_langs: int = 3
     max_edges: int = 12
     common_name_dirs: int = 5
+    # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
+    generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"])
 
 
 @dataclass
@@ -85,6 +87,8 @@ class Config:
     git: GitConfig = field(default_factory=GitConfig)
     # Problems found while loading, for the report
     warnings: List[str] = field(default_factory=list, compare=False)
+    # The file still has the old [tests] section (test globs now live in areas.toml)
+    stale_tests: bool = field(default=False, compare=False)
 
 
 def _matches(default: Any, value: Any) -> bool:
@@ -99,7 +103,7 @@ def _matches(default: Any, value: Any) -> bool:
 
 def _apply(target: Any, table: dict, prefix: str, warnings: List[str]) -> None:
     """Copy table's values onto the target dataclass, keeping defaults for bad entries."""
-    fields = {f.name for f in dataclasses.fields(target)} - {"warnings"}
+    fields = {f.name for f in dataclasses.fields(target)} - {"warnings", "stale_tests"}
     for key, value in table.items():
         name = f"{prefix}{key}"
         if key not in fields:
@@ -128,5 +132,10 @@ def load_config(root: str) -> Config:
     except (OSError, tomllib.TOMLDecodeError) as e:
         config.warnings.append(f"{CONFIG_FILE}: {e}; using defaults")
         return config
+    if "tests" in table:
+        table = {k: v for k, v in table.items() if k != "tests"}
+        config.stale_tests = True
+        config.warnings.append(f"{CONFIG_FILE}: unknown key 'tests'; test globs moved to "
+                               '.repomap/areas.toml as [globs."..."] entries with kind = "test". Remove it')
     _apply(config, table, "", config.warnings)
     return config

@@ -3,7 +3,7 @@ import os
 from typing import List
 
 from repomapper.utils import REPOMAP_DIR, IGNORE_FILE, ignore_file_content, find_src_files
-from repomapper.areas import starter_entries
+from repomapper.areas import TEST_GLOB_ENTRIES, starter_entries
 
 CACHE_DIR = f"{REPOMAP_DIR}/cache"
 
@@ -48,34 +48,7 @@ AREAS_TEMPLATE = """\
 
 # Tests and tool configs. Remove or override what doesn't fit this project.
 
-[globs."*_test.*"]
-importance = "low"
-kind = "test"
-
-[globs."test_*.*"]
-importance = "low"
-kind = "test"
-
-[globs."*.spec.*"]
-importance = "low"
-kind = "test"
-
-[globs."*.test.*"]
-importance = "low"
-kind = "test"
-
-[globs."tests/**"]
-importance = "low"
-kind = "test"
-
-[globs."**/__tests__/**"]
-importance = "low"
-kind = "test"
-
-[globs."conftest.py"]
-importance = "low"
-kind = "test"
-
+""" + TEST_GLOB_ENTRIES + """
 [globs."karma*.conf.js"]
 kind = "config"
 
@@ -108,6 +81,7 @@ kind = "config"
 
 [globs."docker-bake.*"]
 kind = "config"
+
 [globs."setup.py"]
 kind = "config"
 
@@ -156,6 +130,8 @@ CONFIG_TEMPLATE = """\
 # max_langs = 3
 # max_edges = 12
 # common_name_dirs = 5         # names defined in more directories than this (ngOnInit, value) aren't sample names
+# Builtin and everyday method names (push, set, id, log) are never sample names:
+# generic_names = ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"]
 
 [search]
 # max_context_line_length = 200

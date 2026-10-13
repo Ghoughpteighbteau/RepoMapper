@@ -3,8 +3,8 @@ import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from repomapper.config import GitConfig
-from repomapper.areas import Area, Areas, annotation, load_areas, readme_sentence, stale_entries
+from repomapper.config import Config, GitConfig
+from repomapper.areas import Area, Areas, annotation, load_areas, readme_sentence, stale_entries, moved_tests_hint
 from repomapper.repomap_dir import AREAS_TEMPLATE, init_repomap_dir
 
 
@@ -179,3 +179,47 @@ def test_template_globs_demote_tests_and_configs(tmp_path):
     assert areas.resolve("ui/karma.conf.js").kind == "config"
     assert areas.resolve("docker-bake.hcl").kind == "config"
     assert areas.resolve("src/app.ts").kind is None
+
+
+def test_stale_tests_hint_prints_starter_globs_only_when_areas_has_none(tmp_path):
+    config = Config(stale_tests=True)
+
+    hint = moved_tests_hint(config, Areas())
+
+    assert len(hint) == 1 and '[globs."*_test.*"]\nimportance = "low"\nkind = "test"' in hint[0]
+    assert moved_tests_hint(config, Areas(globs={"*.spec.*": Area(kind="test")})) == []
+    assert moved_tests_hint(Config(), Areas()) == []
+
+
+def test_template_test_globs_cover_jvm_and_nested_tests_folders(tmp_path):
+    write_areas(tmp_path, AREAS_TEMPLATE)
+
+    areas = load_areas(str(tmp_path))
+
+    assert areas.resolve("email/src/main/java/a/MailerTest.java").kind == "test"
+    assert areas.resolve("email/src/main/java/a/MailerTests.java").kind == "test"
+    assert areas.resolve("email/src/test/resources/mail.json").kind == "test"
+    assert areas.resolve("src/test/java/a/Fixtures.java").kind == "test"
+    assert areas.resolve("pkg/tests/helpers.py").kind == "test"
+    assert areas.resolve("tests/helpers.py").kind == "test"
+    assert areas.resolve("email/src/main/java/a/Mailer.java").kind is None
+    assert areas.resolve("src/testing/x.py").kind is None
+
+
+def test_readme_sentence_skips_titles_fragments_and_later_sections(tmp_path):
+    (tmp_path / "README.md").write_text("Email Service\n-\n\nThe email service sends mail through SES.\n")
+    assert readme_sentence(str(tmp_path)) == "The email service sends mail through SES."
+
+    (tmp_path / "README.md").write_text("WAR Overlay Type: `cas-overlay`\n\nUsage:\n\nRun it.\n")
+    assert readme_sentence(str(tmp_path)) is None
+
+    (tmp_path / "README.md").write_text("## Service Integration\n\n- a list\n\n## Glossary\n\n"
+                                        "Names in this codebase that don't mean what they look like.\n")
+    assert readme_sentence(str(tmp_path)) is None
+
+    (tmp_path / "README.md").write_text("Overlay Template\n===\n\nOverlay Type: `cas`\n\n# Build\n\n"
+                                        "To build the project, run the wrapper script.\n")
+    assert readme_sentence(str(tmp_path)) is None
+
+    (tmp_path / "README.md").write_text("# Gateway\n\nRoutes traffic to the services.\n\n## More\n\nOther.\n")
+    assert readme_sentence(str(tmp_path)) == "Routes traffic to the services."

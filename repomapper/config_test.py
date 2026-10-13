@@ -67,3 +67,14 @@ def test_default_language_families_link_js_ts_c_cpp_and_jvm():
     families = Config().languages.families
     for group in (["javascript", "typescript"], ["c", "cpp"], ["java", "kotlin", "scala"]):
         assert any(set(group) <= set(f) for f in families), group
+
+
+def test_stale_tests_section_points_to_areas_globs(tmp_path):
+    write_config(tmp_path, '[tests]\nglobs = ["*_test.*"]\n')
+
+    config = load_config(str(tmp_path))
+
+    assert len(config.warnings) == 1
+    assert "'tests'" in config.warnings[0] and "areas.toml" in config.warnings[0]
+    assert '[globs."..."]' in config.warnings[0] and 'kind = "test"' in config.warnings[0]
+    assert config.stale_tests

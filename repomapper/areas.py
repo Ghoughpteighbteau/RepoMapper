@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
-from repomapper.config import GitConfig
+from repomapper.config import Config, GitConfig
 from repomapper.history import History, read_history
 from repomapper.utils import REPOMAP_DIR
 
@@ -155,6 +155,20 @@ def load_areas(root: str) -> Areas:
     return areas
 
 
+# Starter test globs, written into new areas.toml files and suggested for old [tests] sections
+TEST_GLOBS = ("*_test.*", "test_*.*", "*.spec.*", "*.test.*", "*Test.java", "*Tests.java", "*Test.kt",
+              "**/tests/**", "**/src/test/**", "**/__tests__/**", "conftest.py")
+TEST_GLOB_ENTRIES = "\n".join(f'[globs."{g}"]\nimportance = "low"\nkind = "test"\n' for g in TEST_GLOBS)
+
+
+def moved_tests_hint(config: Config, areas: Areas) -> List[str]:
+    """For a config.toml still holding the old [tests] section, while areas.toml has no kind = "test" globs:
+    the starter entries to paste into areas.toml."""
+    if not config.stale_tests or any(entry.kind == "test" for entry in areas.globs.values()):
+        return []
+    return [f"{AREAS_FILE}: no kind = \"test\" globs yet; starter entries to paste:\n\n{TEST_GLOB_ENTRIES}"]
+
+
 # --- Starter entries and staleness, both derived from the tree and git history ---
 
 BIG_AREA_FILES = 100      # top-level dirs with more files also get entries for their subdirectories
@@ -171,7 +185,12 @@ def _git(root: str, *args: str) -> Optional[str]:
 
 
 def readme_sentence(directory: str) -> Optional[str]:
-    """First sentence of the first prose paragraph in the directory's README or CLAUDE.md."""
+    """First sentence of the opening prose in the directory's README or CLAUDE.md, or None if it has none.
+
+    Headings (# or underlined), badges, html, lists, code and tables are skipped, as are title-ish lines and
+    fragments (fewer than three words, or not ending in . ! ?: "Email Service -", "Type: `x`"). Prose under a
+    heading that follows other content belongs to a section, not the intro, so the search stops at that
+    heading ("## Glossary" / "Names in this codebase that...")."""
     try:
         names = sorted(n for n in os.listdir(directory) if n.upper().startswith("README") or n == "CLAUDE.md")
     except OSError:
@@ -182,12 +201,25 @@ def readme_sentence(directory: str) -> Optional[str]:
                 text = f.read(20_000)
         except OSError:
             continue
-        for para in re.split(r"\n\s*\n", text):
-            para = " ".join(para.split())
-            # Skip headings, badges, html, lists, code fences and tables
-            if not para or para[0] in "#[!<-*|>`=" or para[0].isdigit():
+        seen_content = False
+        for raw in re.split(r"\n\s*\n", text):
+            lines = raw.strip().splitlines()
+            if not lines:
+                continue
+            setext = len(lines) > 1 and re.fullmatch(r"\s*(=+|-+)\s*", lines[-1])
+            if lines[0].startswith("#") or setext:
+                if seen_content:
+                    break
+                continue
+            para = " ".join(raw.split())
+            if para[0] in "[!<":   # badges and html
+                continue
+            seen_content = True
+            if para[0] in "-*|>`=" or para[0].isdigit():   # lists, code fences and tables
                 continue
             sentence = re.split(r"(?<=[.!?])\s", para, maxsplit=1)[0]
+            if len(sentence.split()) < 3 or not re.search(r"[.!?]$", sentence):
+                continue
             return sentence if len(sentence) <= MAX_NOTE_LENGTH else sentence[:MAX_NOTE_LENGTH - 3] + "..."
     return None
 
@@ -269,3 +301,4 @@ def stale_entries(root: str, areas: Areas, settings: GitConfig = GitConfig(),
             stale.append(f'{AREAS_FILE}: paths."{path}" was last edited {when}, {count} commits under it since; '
                          "check it's still accurate")
     return stale
+
