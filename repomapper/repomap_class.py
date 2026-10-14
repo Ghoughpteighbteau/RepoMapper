@@ -5,10 +5,12 @@ RepoMap class for generating repository maps.
 import os
 import posixpath
 import sys
+import time
 from pathlib import Path
 from collections import Counter, namedtuple, defaultdict
 from typing import List, Dict, Set, Optional, Tuple, Callable, Any, Union
 import bisect
+import dataclasses
 import functools
 import hashlib
 import importlib.metadata
@@ -32,8 +34,9 @@ from repomapper.outline import OutlineFile, find_docs, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
 from repomapper.imports import IMPORT_RE, ImportResolver, extract_imports, load_packages
-from repomapper.graph import RefGraph, ident_ranks as ident_rank_sums, pagerank
-from repomapper.history import History, activity_factors, read_history
+from repomapper.graph import OutlinePairs, PairSums, RefGraph, ident_ranks as ident_rank_sums, pagerank
+from repomapper.history import History, activity_factors, head_commit, read_history
+from repomapper import ranking_cache
 
 
 @dataclass
@@ -60,6 +63,9 @@ class Ranking:
     chat_rel_fnames: Set[str]
     nested: Dict[str, Set[str]] = field(default_factory=dict)  # rel_fname -> names only defined inside functions
     types: Dict[str, Set[str]] = field(default_factory=dict)   # rel_fname -> names of classes, interfaces, types, enums
+    # The graph's edges as the outline reads them. A ranking loaded from disk has only these (its graph is a stub
+    # holding the node list); a fresh one gets them when it is stored, or from outline_inputs.
+    pair_edges: Optional[OutlinePairs] = None
 
 
 
@@ -481,8 +487,10 @@ class RepoMap:
         mentioned_idents: Optional[Set[str]] = None,
         force_refresh: bool = False
     ) -> "Ranking":
-        """Parse files, build the reference graph and run PageRank over it."""
-        ranking_config = self.config.ranking
+        """Parse files, build the reference graph and run PageRank over it.
+
+        An unseeded ranking (nothing in the chat or mentioned) is reused from the in-process memo or from
+        .repomap/cache/ranking.v1 while nothing it depends on has changed (see ranking_cache)."""
         mentioned_fnames = self.normalize_mentioned_fnames(mentioned_fnames or set())
         if mentioned_idents is None:
             mentioned_idents = set()
@@ -491,12 +499,82 @@ class RepoMap:
             return Ranking(None, {}, {}, [], {}, FileReport({}, 0, 0, 0), mentioned_fnames, mentioned_idents, set())
 
         # Normalize paths to absolute
+        real_dirs: Dict[str, str] = {}
+
         def normalize_path(path):
-            return str(Path(path).resolve())
-        
+            # Path.resolve costs a stat per path component; resolve each directory once, and a file only if it is a link
+            directory, base = os.path.split(path)
+            if not os.path.isabs(path) or not base or base in (".", "..") or os.path.islink(path):
+                return str(Path(path).resolve())
+            if directory not in real_dirs:
+                real_dirs[directory] = os.path.realpath(directory)
+            return os.path.join(real_dirs[directory], base)
+
         chat_fnames = [normalize_path(f) for f in chat_fnames]
         other_fnames = [normalize_path(f) for f in other_fnames]
-        
+
+        unseeded = not (chat_fnames or mentioned_fnames or mentioned_idents)
+        if not (unseeded and self.config.map.ranking_cache):
+            return self.compute_ranking(chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh)
+
+        root = str(self.root)
+        stamps = [(fname, ranking_cache.stamp_of(fname)) for fname in set(other_fnames)]
+        if any(stamp is None for _fname, stamp in stamps):
+            return self.compute_ranking(chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh)
+        key = self.ranking_key(stamps)
+        if not force_refresh:
+            hit = ranking_cache.memo_get(root, key)
+            from_memo = hit is not None
+            if not from_memo:
+                hit = ranking_cache.load(ranking_cache.cache_path(root, CACHE_DIR), key)
+            if hit is not None and ranking_cache.reads_valid(root, hit[1]):
+                ranking, reads = hit
+                if not from_memo:
+                    ranking_cache.memo_put(root, key, ranking, reads)
+                return self.private_copy(ranking)
+
+        reads: Dict[str, ranking_cache.Stamp] = {}
+        ranking = self.compute_ranking(chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh,
+                                       reads)
+        report = ranking.report
+        # Parse errors and missing files must be reported by every run, so those rankings are not kept
+        if ranking.graph is not None and not report.excluded and not report.parse_errors:
+            ranking.pair_edges = self.outline_pairs(ranking)
+            reads_list = sorted(reads.items())
+            ranking_cache.memo_put(root, key, ranking, reads_list)
+            ranking_cache.store(ranking_cache.cache_path(root, CACHE_DIR), key, ranking_cache.pack(ranking, reads_list))
+            return self.private_copy(ranking)
+        return ranking
+
+    @staticmethod
+    def private_copy(ranking: "Ranking") -> "Ranking":
+        """The memo hands out copies, so a caller changing the report doesn't change what the next call gets."""
+        return dataclasses.replace(ranking, report=dataclasses.replace(
+            ranking.report, excluded=dict(ranking.report.excluded), parse_errors=dict(ranking.report.parse_errors)))
+
+    def ranking_key(self, stamps: List[Tuple[str, ranking_cache.Stamp]]) -> str:
+        """Key of everything an unseeded build_ranking reads besides the listed files' tags: the extractor, the
+        settings and areas it uses, git HEAD and the day (history activity), and the files' stamps."""
+        head = head_commit(str(self.root))
+        day = int(time.time() // ranking_cache.ACTIVITY_BUCKET_SECONDS) if head else None
+        return ranking_cache.make_key(
+            [extractor_fingerprint(), str(self.root), self.config.ranking, self.config.languages.families,
+             self.config.git, self.config.outline.shared_name_edge_weight, self.areas.entries, self.areas.globs,
+             head, day, FileReport.__dataclass_fields__.keys()],
+            stamps)
+
+    def compute_ranking(
+        self,
+        chat_fnames: List[str],
+        other_fnames: List[str],
+        mentioned_fnames: Set[str],
+        mentioned_idents: Set[str],
+        force_refresh: bool = False,
+        reads: Optional[Dict[str, ranking_cache.Stamp]] = None,
+    ) -> "Ranking":
+        """build_ranking without the cache; paths are absolute and normalized. reads, if given, collects the
+        (root-relative path -> stamp) of every unlisted file the import resolution looked at."""
+        ranking_config = self.config.ranking
         # Initialize file report
         included: List[str] = []
         excluded: Dict[str, str] = {}
@@ -603,7 +681,12 @@ class RepoMap:
         imp_weight: List[float] = []
         if imports and ranking_config.import_weight > 0:
             rel_files = included_rel
-            resolver = ImportResolver(rel_files, self.read_disk_text, load_packages(str(self.root), rel_files))
+            read = self.read_disk_text
+            if reads is not None:
+                def read(rel_fname: str) -> Optional[str]:
+                    reads[rel_fname] = ranking_cache.stamp_of(str(self.root / rel_fname))
+                    return self.read_disk_text(rel_fname)
+            resolver = ImportResolver(rel_files, read, load_packages(str(self.root), rel_files))
             for rel_fname, specs in imports.items():
                 targets: Dict[str, int] = Counter()
                 for spec in specs:
@@ -758,6 +841,26 @@ class RepoMap:
         return render_outline(*self.outline_inputs(ranking, other_fnames, max_tokens),
                               focus=focus, leaves=leaves), ranking.report
 
+    def outline_pairs(self, ranking: "Ranking") -> OutlinePairs:
+        """The ranking's edges between files the outline lists, summed per file pair."""
+        from grep_ast import filename_to_lang
+        # Shared names between JS/TS files are mostly coincidence (separate apps share `Account`, `get`); imports decide
+        name_scale = self.config.outline.shared_name_edge_weight
+        graph = ranking.graph
+        n = len(graph.nodes)
+        listed = {self.get_rel_fname(fname) for fname in ranking.included if is_parseable(fname)}
+        shown = np.array([node in listed for node in graph.nodes], dtype=bool)
+        js = np.array([node in listed and filename_to_lang(node) in IMPORT_LANGUAGES for node in graph.nodes], dtype=bool)
+        is_import = graph.name_id < 0
+        scale = np.where(js[graph.src] & js[graph.dst], name_scale, 1.0)
+        weight = np.where(is_import, graph.weight, graph.weight * scale)
+        use = shown[graph.src] & shown[graph.dst] & (is_import | (scale > 0))
+
+        def pair_sums(mask: np.ndarray) -> PairSums:
+            return PairSums.of(n, graph.src[mask], graph.dst[mask], weight[mask])
+
+        return OutlinePairs(graph.nodes, pair_sums(use & ~is_import), pair_sums(use & is_import))
+
     def outline_inputs(self, ranking: "Ranking", other_fnames: List[str], max_tokens: int) -> tuple:
         """Arguments for render_outline: files with shares of PageRank, edges, budget and the callbacks."""
         files = {}
@@ -781,26 +884,9 @@ class RepoMap:
         for f in files.values():
             f.rank /= total_rank
 
-        from grep_ast import filename_to_lang
-        # Shared names between JS/TS files are mostly coincidence (separate apps share `Account`, `get`); imports decide
-        name_scale = self.config.outline.shared_name_edge_weight
-        graph = ranking.graph
-        n = len(graph.nodes)
-        shown = np.array([node in files for node in graph.nodes], dtype=bool)
-        js = np.array([node in files and filename_to_lang(node) in IMPORT_LANGUAGES for node in graph.nodes], dtype=bool)
-        is_import = graph.name_id < 0
-        scale = np.where(js[graph.src] & js[graph.dst], name_scale, 1.0)
-        weight = np.where(is_import, graph.weight, graph.weight * scale)
-        use = shown[graph.src] & shown[graph.dst] & (is_import | (scale > 0))
-
-        def pair_sums(mask: np.ndarray) -> Dict[Tuple[str, str], float]:
-            keys, inverse = np.unique(graph.src[mask] * n + graph.dst[mask], return_inverse=True)
-            sums = np.bincount(inverse.ravel(), weights=weight[mask], minlength=len(keys))
-            nodes = graph.nodes
-            return {(nodes[k // n], nodes[k % n]): v for k, v in zip(keys.tolist(), sums.tolist())}
-
-        edges = pair_sums(use & ~is_import)
-        import_edges = pair_sums(use & is_import)
+        pairs = ranking.pair_edges or self.outline_pairs(ranking)
+        edges = pairs.named.as_dict(pairs.nodes)
+        import_edges = pairs.imports.as_dict(pairs.nodes)
 
         def docs(rel_dir: str) -> List[str]:
             try:

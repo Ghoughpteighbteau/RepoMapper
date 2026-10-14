@@ -2,6 +2,7 @@
 Utility functions for RepoMap.
 """
 
+import functools
 import os
 import re
 import subprocess
@@ -138,12 +139,16 @@ def find_src_files(directory: str, ignore_root: Optional[str] = None) -> List[st
     ]
 
 
+@functools.lru_cache(maxsize=None)
+def _lang_parseable(lang: Optional[str]) -> bool:
+    from repomapper.scm import get_scm_fname
+    return bool(lang and get_scm_fname(lang))
+
+
 def is_parseable(path: str) -> bool:
     """Whether RepoMapper has a tags query for this file's language."""
     from grep_ast import filename_to_lang
-    from repomapper.scm import get_scm_fname
-    lang = filename_to_lang(path)
-    return bool(lang and get_scm_fname(lang))
+    return _lang_parseable(filename_to_lang(path))
 
 
 LARGE_FILE_LINES = 10_000

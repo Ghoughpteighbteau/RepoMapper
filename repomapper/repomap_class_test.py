@@ -222,7 +222,7 @@ def test_identifier_weight_uses_configured_multipliers():
 def test_core_importance_raises_unseeded_rank(tmp_path):
     files = make_project(tmp_path, PROJECT)
     plain = make_repomap(tmp_path).build_ranking([], files).file_ranks
-    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap").mkdir(exist_ok=True)
     (tmp_path / ".repomap" / "areas.toml").write_text('[paths."alone.ts"]\nimportance = "core"\n')
     tilted = make_repomap(tmp_path).build_ranking([], files).file_ranks
 
@@ -360,7 +360,7 @@ def test_low_importance_scales_rank_after_pagerank(tmp_path):
     plain = make_repomap(tmp_path).build_ranking([], fnames)
     assert plain.file_ranks["hub.ts"] > plain.file_ranks["other.ts"]
 
-    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap").mkdir(exist_ok=True)
     (tmp_path / ".repomap" / "areas.toml").write_text('[paths."hub.ts"]\nimportance = "low"\n')
     tilted = make_repomap(tmp_path).build_ranking([], fnames)
 
@@ -371,7 +371,7 @@ def test_low_importance_scales_rank_after_pagerank(tmp_path):
 def test_core_importance_multiplies_the_pagerank_result(tmp_path):
     files = make_project(tmp_path, PROJECT)
     plain = make_repomap(tmp_path).build_ranking([], files).file_ranks
-    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap").mkdir(exist_ok=True)
     (tmp_path / ".repomap" / "areas.toml").write_text('[paths."core.ts"]\nimportance = "core"\n')
     tilted = make_repomap(tmp_path).build_ranking([], files).file_ranks
 

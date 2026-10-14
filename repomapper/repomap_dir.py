@@ -97,6 +97,7 @@ CONFIG_TEMPLATE = """\
 
 [map]
 # token_limit = 8192
+# ranking_cache = true   # reuse the unseeded ranking while the files, settings and git HEAD are unchanged (.repomap/cache/ranking.v1)
 
 [languages]
 # Files only link through shared names within a language family (a language in none is its own family).

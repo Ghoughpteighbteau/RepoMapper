@@ -115,6 +115,12 @@ def parse_log(text: str) -> List[Tuple[int, List[str]]]:
     return commits
 
 
+def head_commit(root: str) -> Optional[str]:
+    """The commit HEAD points at, None outside a git repo or without commits."""
+    head = _git(root, "rev-parse", "HEAD")
+    return head.strip() if head and head.strip() else None
+
+
 def read_history(root: str, settings: GitConfig = GitConfig()) -> Optional[History]:
     """Read (or load from cache) the project's history; None outside a git repo or without commits."""
     head = _git(root, "rev-parse", "HEAD")

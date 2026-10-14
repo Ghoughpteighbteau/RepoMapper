@@ -3,7 +3,7 @@
 Edges are parallel arrays (a multigraph: the same pair can occur many times, once per shared name plus once for
 an import). PageRank sums the parallel weights, like networkx does for a MultiDiGraph."""
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import scipy.sparse as sp
@@ -87,3 +87,29 @@ def ident_ranks(graph: RefGraph, ranks: np.ndarray, target_scale: Optional[np.nd
         sums = sums * target_scale[keys // width]
     nodes, names = graph.nodes, graph.names
     return {(nodes[k // width], names[k % width]): v for k, v in zip(keys.tolist(), sums.tolist())}
+
+
+@dataclass
+class PairSums:
+    """Edge weights summed per (src, dst) node pair, as parallel arrays sorted by pair."""
+    src: np.ndarray
+    dst: np.ndarray
+    weight: np.ndarray
+
+    @staticmethod
+    def of(n: int, src: np.ndarray, dst: np.ndarray, weight: np.ndarray) -> "PairSums":
+        keys, inverse = np.unique(src.astype(np.int64) * n + dst, return_inverse=True)
+        sums = np.bincount(inverse.ravel(), weights=weight, minlength=len(keys))
+        return PairSums(keys // n, keys % n, sums)
+
+    def as_dict(self, nodes: List[str]) -> Dict[Tuple[str, str], float]:
+        return {(nodes[s], nodes[d]): w for s, d, w in zip(self.src.tolist(), self.dst.tolist(), self.weight.tolist())}
+
+
+@dataclass
+class OutlinePairs:
+    """The graph's edges as the outline reads them: between listed files only, summed per file pair, shared-name
+    edges (already scaled by outline.shared_name_edge_weight) apart from import edges."""
+    nodes: List[str]
+    named: PairSums
+    imports: PairSums

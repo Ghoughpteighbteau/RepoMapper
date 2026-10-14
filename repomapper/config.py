@@ -13,6 +13,7 @@ CONFIG_FILE = f"{REPOMAP_DIR}/config.toml"
 @dataclass
 class MapConfig:
     token_limit: int = 8192
+    ranking_cache: bool = True   # keep the unseeded ranking in .repomap/cache/ranking.v1 (and in memory in the MCP server)
 
 
 @dataclass
