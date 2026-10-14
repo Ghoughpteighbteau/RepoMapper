@@ -1,3 +1,5 @@
+import re
+
 from repomapper.areas import Area, Areas
 from repomapper.config import IdentifierWeightConfig, OutlineConfig
 from repomapper.outline import HEADER, MAX_PLAIN_DIRS, OutlineFile, find_docs, render_outline
@@ -25,7 +27,7 @@ def test_small_budget_folds_directories_to_one_line():
 
 
 def test_directory_too_big_to_open_stays_folded_and_smaller_ones_open():
-    out = render_outline(FILES, EDGES, 230, tokens)
+    out = render_outline(FILES, EDGES, 200, tokens)
     assert "lib/types/  2 files" in out and "user.ts" not in out
     assert "app.ts 20.0%: App" in out
     assert "legacy.js 10.0%: init" in out   # every top-level area opens a level before lib/ goes deeper
@@ -59,7 +61,7 @@ def test_settings_limit_names_files_and_edges():
 def test_area_notes_and_status_show_on_their_lines():
     areas = Areas({"front_end": Area(status="legacy", replaced_by="ui", note="old jQuery app")})
     out = render_outline(FILES, EDGES, 10_000, tokens, areas=areas)
-    assert "front_end/  1 file (js 1) 10.0% [legacy, replaced by ui] — old jQuery app" in out
+    assert "front_end/  1 file 10.0% [legacy, replaced by ui] — old jQuery app" in out
 
 
 def test_folded_area_stays_one_line_with_room_to_spare():
@@ -71,9 +73,9 @@ def test_folded_area_stays_one_line_with_room_to_spare():
 def test_directory_lines_show_git_activity():
     notes = {"lib/types": "3 commits/90d, last 2d", "front_end": "idle 3y"}
     out = render_outline(FILES, EDGES, 10_000, tokens, activity=notes.get)
-    assert "lib/types/  2 files (ts 2) 70.0%, 3 commits/90d, last 2d" in out
-    assert "front_end/  1 file (js 1) 10.0%, idle 3y" in out
-    assert "ui/  1 file (ts 1) 20.0%\n" in out or "ui/  1 file (ts 1) 20.0%:" in out
+    assert "lib/types/  2 files 70.0%, 3 commits/90d, last 2d" in out
+    assert "front_end/  1 file 10.0%, idle 3y" in out
+    assert "ui/  1 file 20.0%\n" in out or "ui/  1 file 20.0%:" in out
 
 
 def leaf_files(prefix, n, rank):
@@ -112,7 +114,7 @@ def test_many_similar_children_show_biggest_few_and_more_line():
     out = render_outline(files, {}, 10_000, tokens)
     assert "big/  5 files" in out
     assert "+29 more dirs" in out
-    assert out.count("1 file (py 1)") == 11
+    assert out.count("  1 file 1.0%") == 11
 
 
 def test_fits_budget_at_any_size():
@@ -213,7 +215,7 @@ def test_minified_files_give_no_sample_names():
     minified = [(0.5 - i / 100, chr(97 + i)) for i in range(12)] + [(0.01, "format")]
     files = {"lib/vendor.js": OutlineFile(0.5, minified), "lib/app.js": OutlineFile(0.5, [(0.1, "App")])}
     out = render_outline(files, {}, 10_000, tokens)
-    assert "lib/  2 files (js 2) 100.0%: App\n" in out or "\nlib/  2 files (js 2) 100.0%\n" in out
+    assert "lib/  2 files 100.0%\n" in out
     assert "vendor.js 50.0%\n" in out
 
 
@@ -279,7 +281,7 @@ def test_chain_at_top_collapses_and_edges_use_full_paths():
     files = {"solo/a/b/x.py": OutlineFile(0.5, [(0.5, "x")]), "other/y.py": OutlineFile(0.5, [(0.5, "y")]),
              "other/z.py": OutlineFile(0.0, [(0.0, "z")])}
     out = render_outline(files, {("other/y.py", "solo/a/b/x.py"): 1.0}, 10_000, tokens)
-    assert "\nsolo/a/b/  1 file (py 1) 50.0%" in out or "\n  solo/a/b/  1 file (py 1) 50.0%" in out
+    assert "\nsolo/a/b/  1 file 50.0%" in out or "\n  solo/a/b/  1 file 50.0%" in out
     assert "  a/  " not in out
     assert "other/y.py -> solo/a/b/x.py" in out
     folded = render_outline(files, {("other/y.py", "solo/a/b/x.py"): 1.0}, 140, tokens)
@@ -291,7 +293,7 @@ def test_collapsed_chain_keeps_docs_and_notes_of_its_upper_dirs():
     files = {"svc/src/main/a.py": OutlineFile(0.5, [(0.5, "a")]), "svc/src/main/b.py": OutlineFile(0.5, [(0.5, "b")])}
     areas = Areas({"svc": Area(note="mail service")})
     out = render_outline(files, {}, 10_000, tokens, areas=areas, docs=lambda d: ["README.md"] if d == "svc" else [])
-    assert "svc/src/main/  2 files (py 2) 100.0%  [svc/README.md] — mail service" in out
+    assert "svc/src/main/  2 files 100.0%  [svc/README.md] — mail service" in out
 
 
 def test_generic_builtin_names_are_not_samples():
@@ -401,12 +403,12 @@ def test_directory_of_unparseable_files_is_a_count_only_line_with_its_note():
 
 def test_unparseable_files_in_a_directory_with_code_are_not_listed():
     out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=["ui/data.json", "ui/more.json", "ui/x.json", "README.md"])
-    assert "json" not in out and "ui/  1 file (ts 1)" in out
+    assert "json" not in out and "ui/  1 file" in out
 
 
 def test_non_code_directories_do_not_change_their_parents_counts_or_shares():
     out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=plain("ui/migrations", 5))
-    assert "ui/  1 file (ts 1) 20.0%" in out
+    assert "ui/  1 file 20.0%" in out
     assert "migrations/  5 files (sql 5)" in out
 
 
@@ -491,16 +493,16 @@ def test_activity_settings_are_configurable():
     default = render_outline(files, {}, budget, tokens, recent_commits=recent)
     blind = render_outline(files, {}, budget, tokens, recent_commits=recent, settings=OutlineConfig(idle_activity=1.0))
     assert "\n    a/  5 files" in default.split("work/")[1] and "idle/  10 files (py 10) 100.0%:" in default
-    assert "idle/  10 files (py 10) 100.0%\n" in blind
+    assert "idle/  10 files 100.0%\n" in blind
 
 
 def test_a_wide_directory_lists_a_few_subdirectories_first_and_more_as_the_budget_grows():
     files = {rel: f for i in range(20) for rel, f in leaf_files(f"wide/d{i:02}", 5, 0.01).items()}
     sizes = []
-    for budget in (350, 600, 10_000):
+    for budget in (350, 700, 10_000):
         out = render_outline(files, {}, budget, tokens)
         assert tokens(out) <= budget
-        sizes.append(sum(1 for line in out.split("\n") if " 5 files (py 5)" in line))
+        sizes.append(sum(1 for line in out.split("\n") if re.match(r"\s*d\d\d/  5 files", line)))
     assert 3 <= sizes[0] <= 6 < sizes[1] <= 12 == sizes[2]
 
 
@@ -646,3 +648,10 @@ def test_blocks_outside_the_focus_follow_the_trunk():
 
 def test_unseeded_outline_is_unchanged():
     assert render_outline(FILES, EDGES, 230, tokens) == render_outline(FILES, EDGES, 230, tokens, focus=None, leaves=None)
+
+
+
+def test_language_breakdown_only_on_truncated_directories():
+    out = render_outline(FILES, EDGES, 10_000, tokens, areas=Areas({"lib": Area(fold=True)}))
+    assert "./  4 files 100.0%\n" in out and "ui/  1 file 20.0%\n" in out   # open dirs: counts only
+    assert "lib/types/  2 files (ts 2)" in out                         # folded: breakdown

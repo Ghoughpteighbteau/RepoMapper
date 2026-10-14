@@ -29,6 +29,9 @@ areas (then the internal ones show as before). Crossing edges end at the area in
 (files directly in the area keep their name), so sibling-folder pairs merge into one line and free slots.
 Edges touching files areas.toml marks legacy or deprecated are dropped (both directions, internal or not).
 
+Directory lines give the file count; the language breakdown `(ts 3, js 2)` is only on truncated directories (folded, or
+open with `+N more dirs`/files). Open directories keep just their unlisted test/config counts.
+
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
 but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
 minified files (definitions mostly single letters), and generic names (push, set, id) from config. The rest are
@@ -300,11 +303,15 @@ def render_outline(
                     setattr(merged, key, getattr(entry, key))
         return docs_note + annotation(merged)
 
-    def summary(d: Dir) -> str:
-        langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
-        if d.kinds:
-            langs += "; " + ", ".join(f"{n} {kind}" for kind, n in sorted(d.kinds.items()))
-        line = f"{d.label}  {d.count} file{'' if d.count == 1 else 's'} ({langs}){pct(d.rank)}"
+    def summary(d: Dir, detail: bool = True) -> str:
+        """Dir line; the language breakdown only where the dir is truncated (folded, or listing less than it holds)."""
+        kinds = ", ".join(f"{n} {kind}" for kind, n in sorted(d.kinds.items()))
+        if detail:
+            langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
+            counts = f" ({langs}; {kinds})" if kinds else f" ({langs})"
+        else:   # open dirs keep the unlisted test/config counts
+            counts = f" ({kinds})" if kinds else ""
+        line = f"{d.label}  {d.count} file{'' if d.count == 1 else 's'}{counts}{pct(d.rank)}"
         note = activity(d.path)
         return f"{line}, {note}" if note else line
 
@@ -382,10 +389,14 @@ def render_outline(
             lines.append(f"{indent}  +{more} more files" if limit else f"{indent}  +{more} file{'' if more == 1 else 's'}")
         return lines
 
+    def truncated(d: Dir, limit: int) -> bool:
+        """An open dir that hides some of its subdirectories or files."""
+        return len(d.dirs) > len(shown(d)) or len(d.files) > limit
+
     def open_lines(d: Dir, depth: int, limit: int) -> List[str]:
         """d's own lines when open, with its subdirectories folded and up to limit files."""
         indent = "  " * depth
-        lines = [f"{indent}{summary(d)}{doc_note(d)}"]
+        lines = [f"{indent}{summary(d, truncated(d, limit))}{doc_note(d)}"]
         lines += [folded_line(sub, indent + "  ") for sub in shown(d)]
         if len(d.dirs) > len(shown(d)):
             lines.append(f"{indent}  +{len(d.dirs) - len(shown(d))} more dirs")
@@ -425,7 +436,7 @@ def render_outline(
             if lone_dir(d):
                 walk(shown(d)[0], depth)
                 return
-            lines.append(f"{indent}{summary(d)}{doc_note(d)}")
+            lines.append(f"{indent}{summary(d, truncated(d, 0 if d.path in hosted else file_limit(d)))}{doc_note(d)}")
             for sub in shown(d):
                 walk(sub, depth + 1)
             if len(d.dirs) > len(shown(d)):
