@@ -429,8 +429,7 @@ def test_relative_import_links_files_with_no_shared_names(tmp_path):
     assert graph.has_edge("app/main.ts", "lib/util.ts")
     assert graph.has_edge("app/main.ts", "app/setup.ts")
     assert not graph.has_edge("lib/util.ts", "app/main.ts")
-    data = graph.get_edge_data("app/main.ts", "lib/util.ts")
-    assert [d["weight"] for d in data.values()] == [RankingConfig().import_weight]
+    assert graph.edge_weights("app/main.ts", "lib/util.ts") == [RankingConfig().import_weight]
 
 
 def test_workspace_package_import_follows_a_barrel_to_its_files(tmp_path):
@@ -455,7 +454,7 @@ def test_import_weight_is_configurable_and_zero_disables_it(tmp_path):
     files = make_project(tmp_path, {"a.ts": "import './b';\nexport const q = 1;\n", "b.ts": "export const w = 1;\n"})
     rm = make_repomap(tmp_path)
     rm.config = Config(ranking=RankingConfig(import_weight=7.0))
-    assert [d["weight"] for d in rm.build_ranking([], files).graph.get_edge_data("a.ts", "b.ts").values()] == [7.0]
+    assert rm.build_ranking([], files).graph.edge_weights("a.ts", "b.ts") == [7.0]
     rm.config = Config(ranking=RankingConfig(import_weight=0.0))
     assert not rm.build_ranking([], files).graph.has_edge("a.ts", "b.ts")
 

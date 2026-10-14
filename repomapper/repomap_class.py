@@ -19,7 +19,7 @@ import sqlite3
 from repomapper.utils import Tag
 from dataclasses import dataclass, field
 import diskcache
-import networkx as nx
+import numpy as np
 from grep_ast import TreeContext
 from pygments.lexers import guess_lexer_for_filename
 from pygments.token import Token
@@ -32,6 +32,7 @@ from repomapper.outline import OutlineFile, find_docs, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
 from repomapper.imports import IMPORT_RE, ImportResolver, extract_imports, load_packages
+from repomapper.graph import RefGraph, ident_ranks as ident_rank_sums, pagerank
 from repomapper.history import History, activity_factors, read_history
 
 
@@ -48,7 +49,7 @@ class FileReport:
 
 @dataclass
 class Ranking:
-    graph: Optional[nx.MultiDiGraph]                 # File reference graph; None when nothing was ranked
+    graph: Optional[RefGraph]                        # File reference graph; None when nothing was ranked
     file_ranks: Dict[str, float]                     # rel_fname -> PageRank
     ident_ranks: Dict[Tuple[str, str], float]        # (rel_fname, def name) -> rank
     included: List[str]                              # Absolute paths that were parsed
@@ -555,31 +556,51 @@ class RepoMap:
             elif rel_fname in mentioned_fnames:
                 personalization[rel_fname] = ranking_config.mentioned_file_personalization
         
-        # Build graph
-        G = nx.MultiDiGraph()
-        
-        # Add nodes
-        for fname in all_fnames:
-            rel_fname = self.get_rel_fname(fname)
-            G.add_node(rel_fname)
-        
-        # Add edges based on references, only between files of the same language family
+        # Build graph: nodes are files, edges numpy arrays (parallel edges allowed, summed by PageRank)
+        nodes = list(dict.fromkeys(self.get_rel_fname(fname) for fname in all_fnames))
+        node_index = {rel: i for i, rel in enumerate(nodes)}
+
+        # Edges based on references, only between files of the same language family
         family = language_families(self.config.languages.families)
-        file_family = {self.get_rel_fname(f): family(f) for f in all_fnames}
+        family_ids: Dict[str, int] = {}
+        file_family = np.zeros(len(nodes), dtype=np.int64)
+        for fname in all_fnames:
+            file_family[node_index[self.get_rel_fname(fname)]] = family_ids.setdefault(family(fname), len(family_ids))
+        chat_nodes = np.zeros(len(nodes), dtype=bool)
+        for rel in chat_rel_fnames:
+            if rel in node_index:
+                chat_nodes[node_index[rel]] = True
+        edge_src: List[int] = []
+        edge_dst: List[int] = []
+        edge_weight: List[float] = []
+        edge_name: List[int] = []
+        names: List[str] = []
         for name, ref_counts in references.items():
             def_fnames = defines.get(name, set())
             if not def_fnames:
                 continue
             mul = identifier_weight(name, len(def_fnames), mentioned_idents, ranking_config.identifier_weight)
-            for ref_fname, count in ref_counts.items():
-                weight = mul * math.sqrt(count)
-                if ref_fname in chat_rel_fnames:
-                    weight *= ranking_config.chat_file_ref_weight
-                for def_fname in def_fnames:
-                    if ref_fname != def_fname and file_family[ref_fname] == file_family[def_fname]:
-                        G.add_edge(ref_fname, def_fname, weight=weight, name=name)
-        
+            name_id = len(names)
+            names.append(name)
+            ref_idx = [node_index[rel] for rel in ref_counts]
+            weights = [mul * math.sqrt(count) for count in ref_counts.values()]
+            for def_fname in def_fnames:
+                edge_src += ref_idx
+                edge_dst += [node_index[def_fname]] * len(ref_idx)
+                edge_weight += weights
+                edge_name += [name_id] * len(ref_idx)
+        src = np.array(edge_src, dtype=np.int64)
+        dst = np.array(edge_dst, dtype=np.int64)
+        weight = np.array(edge_weight, dtype=float)
+        name_id = np.array(edge_name, dtype=np.int64)
+        keep = (src != dst) & (file_family[src] == file_family[dst])
+        weight = np.where(chat_nodes[src], weight * ranking_config.chat_file_ref_weight, weight)[keep]
+        src, dst, name_id = src[keep], dst[keep], name_id[keep]
+
         # Import edges, importer -> imported file(s); a barrel import shares one import's weight among its files
+        imp_src: List[int] = []
+        imp_dst: List[int] = []
+        imp_weight: List[float] = []
         if imports and ranking_config.import_weight > 0:
             rel_files = included_rel
             resolver = ImportResolver(rel_files, self.read_disk_text, load_packages(str(self.root), rel_files))
@@ -594,12 +615,22 @@ class RepoMap:
                         for target in found:
                             targets[target] -= 1 - 1 / len(found)
                 for target, share in targets.items():
-                    weight = ranking_config.import_weight * min(share, 1.0)
+                    weight_ = ranking_config.import_weight * min(share, 1.0)
                     if rel_fname in chat_rel_fnames:
-                        weight *= ranking_config.chat_file_ref_weight
-                    G.add_edge(rel_fname, target, weight=weight, name=None, kind="import")
+                        weight_ *= ranking_config.chat_file_ref_weight
+                    imp_src.append(node_index[rel_fname])
+                    imp_dst.append(node_index[target])
+                    imp_weight.append(weight_)
+        graph = RefGraph(
+            nodes,
+            np.concatenate([src, np.array(imp_src, dtype=np.int64)]),
+            np.concatenate([dst, np.array(imp_dst, dtype=np.int64)]),
+            np.concatenate([weight, np.array(imp_weight, dtype=float)]),
+            np.concatenate([name_id, np.full(len(imp_src), -1, dtype=np.int64)]),
+            names,
+        )
 
-        if not G.nodes():
+        if not nodes:
             report = FileReport(excluded, total_definitions, total_references, len(all_fnames),
                                 dict(self.parse_errors), parseable_files=parseable_files)
             return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
@@ -609,44 +640,41 @@ class RepoMap:
         # PageRank still finds them). areas.toml importance is applied to the result below instead, since
         # link mass swamped it as a seed.
         git_history = None
-        importance_mul: Dict[str, float] = {}
+        importance_mul: Optional[np.ndarray] = None
         if not personalization:
             history = self.history()
             git_history = history.summary() if history else "unavailable (not a git repository, or no commits)"
-            factors = activity_factors(history, G.nodes(), self.config.git)
+            factors = activity_factors(history, nodes, self.config.git)
             if factors:
-                personalization = {node: factors.get(node, 1.0) for node in G.nodes()}
+                personalization = {node: factors.get(node, 1.0) for node in nodes}
             if any(e.importance for e in [*self.areas.entries.values(), *self.areas.globs.values()]):
                 seed = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
-                importance_mul = {node: seed[self.areas.resolve(node).importance] for node in G.nodes()}
+                importance_mul = np.array([seed[self.areas.resolve(node).importance] for node in nodes])
 
-        # Run PageRank
+        # Run PageRank; without seeds, plain PageRank still ranks files by how much the repo references them
         try:
-            # Without seeds, plain PageRank still ranks files by how much the repo references them
-            ranks = nx.pagerank(G, personalization=personalization or None,
-                                 alpha=ranking_config.pagerank_alpha)
+            seeds = None
+            if personalization:
+                seeds = np.array([personalization.get(node, 0) for node in nodes], dtype=float)
+            rank_array = pagerank(len(nodes), graph.src, graph.dst, graph.weight,
+                                  ranking_config.pagerank_alpha, seeds)
         except ZeroDivisionError:
             # Fallback to uniform ranking
-            ranks = {node: 1.0 for node in G.nodes()}
-        
+            rank_array = np.ones(len(nodes))
+
         # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
         # referenced rather than inheriting its file's rank (which let one popular file fill the map)
-        ident_ranks: Dict[Tuple[str, str], float] = defaultdict(float)
-        for src in G.nodes():
-            out_edges = G.out_edges(src, data=True)
-            total_weight = sum(data["weight"] for _, _, data in out_edges)
-            for _, dst, data in out_edges:
-                if data["name"] is None:
-                    continue   # an import edge: the file gets the rank, no definition does
-                ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
-
         # Unseeded: scale each file's rank and its definitions' by its areas.toml importance, renormalized
-        if importance_mul:
-            ranks = {node: r * importance_mul.get(node, 1.0) for node, r in ranks.items()}
-            total = sum(ranks.values()) or 1.0
-            ranks = {node: r / total for node, r in ranks.items()}
-            ident_ranks = defaultdict(float, {(dst, name): r * importance_mul.get(dst, 1.0) / total
-                                              for (dst, name), r in ident_ranks.items()})
+        target_scale = None
+        if importance_mul is not None:
+            scaled = rank_array * importance_mul
+            total = scaled.sum() or 1.0
+            target_scale = importance_mul / total
+            ident_ranks = ident_rank_sums(graph, rank_array, target_scale)
+            rank_array = scaled / total
+        else:
+            ident_ranks = ident_rank_sums(graph, rank_array)
+        ranks = dict(zip(nodes, rank_array.tolist()))
 
         # Update excluded dictionary with status information
         for fname in set(chat_fnames + other_fnames):
@@ -670,7 +698,7 @@ class RepoMap:
         # A name also defined outside functions in the same file is no local helper
         nested = {rel: {name for name, n in counts.items() if n == def_counts[(rel, name)]}
                   for rel, counts in nested.items()}
-        return Ranking(G, ranks, ident_ranks, included, definitions, file_report, mentioned_fnames,
+        return Ranking(graph, ranks, ident_ranks, included, definitions, file_report, mentioned_fnames,
                        mentioned_idents, chat_rel_fnames, nested, dict(types))
 
     def get_outline(self, other_fnames: List[str], max_tokens: int,
@@ -753,20 +781,26 @@ class RepoMap:
         for f in files.values():
             f.rank /= total_rank
 
-        edges: Dict[Tuple[str, str], float] = defaultdict(float)
-        import_edges: Dict[Tuple[str, str], float] = defaultdict(float)
         from grep_ast import filename_to_lang
         # Shared names between JS/TS files are mostly coincidence (separate apps share `Account`, `get`); imports decide
         name_scale = self.config.outline.shared_name_edge_weight
-        js_files = {rel for rel in files if filename_to_lang(rel) in IMPORT_LANGUAGES}
-        for src, dst, data in ranking.graph.edges(data=True):
-            if src in files and dst in files:
-                if data.get("kind") == "import":
-                    import_edges[(src, dst)] += data["weight"]
-                else:
-                    scale = name_scale if src in js_files and dst in js_files else 1.0
-                    if scale > 0:
-                        edges[(src, dst)] += data["weight"] * scale
+        graph = ranking.graph
+        n = len(graph.nodes)
+        shown = np.array([node in files for node in graph.nodes], dtype=bool)
+        js = np.array([node in files and filename_to_lang(node) in IMPORT_LANGUAGES for node in graph.nodes], dtype=bool)
+        is_import = graph.name_id < 0
+        scale = np.where(js[graph.src] & js[graph.dst], name_scale, 1.0)
+        weight = np.where(is_import, graph.weight, graph.weight * scale)
+        use = shown[graph.src] & shown[graph.dst] & (is_import | (scale > 0))
+
+        def pair_sums(mask: np.ndarray) -> Dict[Tuple[str, str], float]:
+            keys, inverse = np.unique(graph.src[mask] * n + graph.dst[mask], return_inverse=True)
+            sums = np.bincount(inverse.ravel(), weights=weight[mask], minlength=len(keys))
+            nodes = graph.nodes
+            return {(nodes[k // n], nodes[k % n]): v for k, v in zip(keys.tolist(), sums.tolist())}
+
+        edges = pair_sums(use & ~is_import)
+        import_edges = pair_sums(use & is_import)
 
         def docs(rel_dir: str) -> List[str]:
             try:

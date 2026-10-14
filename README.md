@@ -198,7 +198,7 @@ The tool generates a structured view of your codebase showing:
 ## Dependencies
 
 -   `tiktoken`: Token counting for various LLM models
--   `networkx`: Graph algorithms (PageRank)
+-   `numpy`, `scipy`: Graph arrays and PageRank
 -   `diskcache`: Persistent caching
 -   `grep-ast`: Tree-sitter integration for code parsing
 -   `tree-sitter`: Code parsing framework
