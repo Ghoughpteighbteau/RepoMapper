@@ -239,9 +239,9 @@ def test_seeded_map_annotates_files_and_leaves_folder_notes_to_the_trunk(tmp_pat
     map_string, _ = make_repomap(tmp_path).get_repo_map(chat_files=[files[3]], other_files=files[:3])
 
     assert "core.ts: [deprecated, replaced by used.ts] — old helpers\n" in map_string
-    assert "old/legacy.ts: [legacy]\n" in map_string
+    assert "\n    legacy.ts: [legacy]\n" in map_string             # hosted under old/, so the path is relative to it
     assert "legacy] — folder note\n" in map_string      # the trunk's directory line carries the folder's note...
-    assert "old/legacy.ts: [legacy]\n" in map_string    # ...the file's own line only its status
+    assert "legacy.ts: [legacy]\n" in map_string        # ...the file's own line only its status
 
 
 def test_seeded_map_note_without_status_follows_the_colon(tmp_path):
@@ -510,9 +510,9 @@ def test_seeded_map_is_a_trunk_with_signatures_inside_it(tmp_path):
     files = make_project(tmp_path, STEPS_PROJECT)
     map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[files[0]], other_files=files[1:])
 
-    assert "Zoomed map" in map_string and "Rank value" in map_string
+    assert "Zoomed map" in map_string and "Rank value" not in map_string
     lines = map_string.splitlines()
-    assert any(line.strip() == "lib/steps/src/task.ts:" for line in lines)
+    assert any(line.strip() == "task.ts:" for line in lines)                              # relative to its directory
     assert "docs/guide/a.ts:" not in map_string                                           # no signatures outside the focus
     assert "red/src/  1 file" in map_string                                               # one-line siblings
     deps = map_string.split("Dependencies (strongest")[1]
@@ -525,7 +525,7 @@ def test_directory_in_mentioned_files_opens_to_signatures(tmp_path):
     map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[], other_files=files,
                                                               mentioned_fnames={"lib/steps/src"})
 
-    assert "lib/steps/src/task.ts:" in map_string and "lib/steps/src/queue.ts:" in map_string
+    assert "task.ts:" in map_string and "queue.ts:" in map_string
     assert "class Queue" in map_string
     assert "docs/guide/a.ts" not in map_string
 
@@ -535,7 +535,7 @@ def test_directory_in_mentioned_files_may_be_absolute_or_have_a_trailing_slash(t
     for mention in (str(tmp_path / "lib/steps/src"), "lib/steps/src/"):
         map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[], other_files=files,
                                                                   mentioned_fnames={mention})
-        assert "lib/steps/src/queue.ts:" in map_string
+        assert "queue.ts:" in map_string
 
 
 @pytest.mark.parametrize("tokens", [200, 400, 800, 2048])
@@ -562,4 +562,32 @@ def test_mentioned_identifier_opens_the_directory_that_defines_it(tmp_path):
     map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[], other_files=files,
                                                               mentioned_idents={"makeTask"})
 
-    assert "lib/steps/src/task.ts:" in map_string and "lib/steps/src/queue.ts:" in map_string
+    assert "task.ts:" in map_string and "queue.ts:" in map_string
+
+
+OTHERS_PROJECT = {
+    "app/main.ts": "import { hub } from '../lib/hub';\nimport { minor } from '../lib/minor';\n"
+                   "export function main() { return hub() + hub() + hub() + hub() + hub() + hub() + minor(); }\n",
+    "lib/hub.ts": "export function hub() { return 1; }\n",
+    "lib/minor.ts": "export function minor() { return 2; }\n",
+    "ui/a.ts": "import { hub } from '../lib/hub';\nimport { minor } from '../lib/minor';\nexport function a() { return hub() + minor(); }\n",
+    "ui/b.ts": "import { hub } from '../lib/hub';\nimport { minor } from '../lib/minor';\nexport function b() { return hub() + minor(); }\n",
+    "ui/c.ts": "import { hub } from '../lib/hub';\nexport function c() { return hub(); }\n",
+}
+
+
+def other_files_section(tmp_path, share):
+    from repomapper.config import Config, OutlineConfig
+    files = make_project(tmp_path, OTHERS_PROJECT)
+    rm = make_repomap(tmp_path, 4096)
+    rm.config = Config(outline=OutlineConfig(other_files_rank_share=share))
+    map_string, _ = rm.get_repo_map(chat_files=[files[0]], other_files=files[1:])
+    return map_string.split("Other ranked files:")[1] if "Other ranked files:" in map_string else ""
+
+
+def test_other_ranked_files_stop_where_the_rank_falls_below_a_share_of_the_top_file(tmp_path):
+    everything = other_files_section(tmp_path, 0.0)
+    cut = other_files_section(tmp_path, 0.9)
+
+    assert "lib/hub.ts:" in everything and "lib/minor.ts:" in everything
+    assert "lib/hub.ts:" in cut and "lib/minor.ts:" not in cut

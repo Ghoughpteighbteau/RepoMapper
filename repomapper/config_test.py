@@ -91,3 +91,10 @@ def test_merge_dir_share_is_configurable(tmp_path):
     write_config(tmp_path, "[outline]\nmerge_dir_share = 0.8\n")
 
     assert load_config(str(tmp_path)).outline.merge_dir_share == 0.8
+
+
+def test_other_files_rank_share_is_configurable(tmp_path):
+    assert Config().outline.other_files_rank_share == 0.7
+    write_config(tmp_path, "[outline]\nother_files_rank_share = 0.3\n")
+
+    assert load_config(str(tmp_path)).outline.other_files_rank_share == 0.3

@@ -611,7 +611,7 @@ def blocks_for(*names, size=1):
     def leaves(budget):
         out, used = {}, 0
         for name in names:
-            block = f"{name}:\n(Rank value: 0.1)\n\n" + "\n".join(f"  {i}: def sig_{i}()" for i in range(size))
+            block = f"{name}:\n" + "\n".join(f"  {i}: def sig_{i}()" for i in range(size))
             used += tokens(block)
             if used > budget:
                 break
@@ -635,7 +635,7 @@ def test_seeded_outline_puts_signature_blocks_under_the_focused_directory():
                          leaves=blocks_for("lib/steps/src/f0.py", "lib/steps/src/f1.py"))
     lines = out.splitlines()
     host = next(i for i, line in enumerate(lines) if line.strip().startswith("lib/steps/src/  3 files"))
-    block = lines.index(next(line for line in lines if line.strip() == "lib/steps/src/f0.py:"))
+    block = lines.index(next(line for line in lines if line.strip() == "f0.py:"))
     assert block > host
     assert lines[block].startswith("    ")                       # indented below its directory
     assert "  0: def sig_0()" in out
@@ -647,7 +647,7 @@ def test_seeded_outline_opens_the_path_even_for_a_low_importance_directory():
     areas = Areas({"lib": Area(importance="low")})
     out = render_outline(SEEDED_FILES, SEEDED_EDGES, 1200, tokens, areas=areas, focus={"lib/steps/src"},
                          leaves=blocks_for("lib/steps/src/f0.py"))
-    assert "lib/steps/src/f0.py:" in out
+    assert "\n    f0.py:" in out
     assert "docs_site/pages/  30 files" in out and "docs_site/pages/f0.py" not in out
 
 
@@ -686,8 +686,15 @@ def test_seeded_dependencies_favor_edges_of_the_focused_area():
 def test_blocks_outside_the_focus_follow_the_trunk():
     out = render_outline(SEEDED_FILES, SEEDED_EDGES, 3000, tokens, focus={"lib/steps/src"},
                          leaves=blocks_for("lib/steps/src/f0.py", "api/src/f1.py"))
-    assert out.index("lib/steps/src/f0.py:") < out.index("api/src/f1.py:")
+    assert out.index("f0.py:") < out.index("api/src/f1.py:")
     assert out.splitlines()[[line.strip() for line in out.splitlines()].index("api/src/f1.py:")].startswith("api/src/f1.py:")
+
+
+def test_hosted_blocks_name_their_file_relative_to_the_host_directory():
+    out = render_outline(SEEDED_FILES, SEEDED_EDGES, 3000, tokens, focus={"lib/steps/src"},
+                         leaves=blocks_for("lib/steps/src/f0.py", "api/src/f1.py"))
+    assert "    f0.py:\n" in out and "lib/steps/src/f0.py:" not in out
+    assert "\napi/src/f1.py:\n" in out                         # other ranked files keep the full path
 
 
 def test_unseeded_outline_is_unchanged():

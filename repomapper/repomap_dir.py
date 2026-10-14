@@ -143,6 +143,7 @@ CONFIG_TEMPLATE = """\
 # idle_activity = 0.25         # ...and a directory with none scores this much (1 turns the activity tilt off; it also orders subdirectories)
 # shared_name_edge_weight = 0.0 # Dependencies: multiplier for edges between two JS/TS files that come only from shared names (0 drops them; imports give the real ones)
 # seeded_trunk_share = 0.2     # seeded maps: share of the token budget for the trunk (path to the focused files, folded siblings, Dependencies); the rest is signatures
+# other_files_rank_share = 0.7 # seeded maps: "Other ranked files" stop at the first file ranked below this share of the best one's (0 = fill the budget)
 # merge_dir_share = 0.95      # a directory whose biggest subdirectory holds this share of its files merges with it into one line (above 1: only empty pass-through directories); files outside show as "(+N files outside)"
 # doc_globs = ["README*", "CLAUDE.md", "*.README.md"]  # doc files listed after each directory in the outline (file-name globs, case-insensitive)
 # Builtin and everyday names (push, set, id, log, message, options; any case) are never sample names:

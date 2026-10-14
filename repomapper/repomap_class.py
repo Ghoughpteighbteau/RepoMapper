@@ -705,6 +705,14 @@ class RepoMap:
         tags = [(rank, tag) for rank, tag in tags
                 if in_focus(tag.rel_fname) or ranking.ident_ranks.get((tag.rel_fname, tag.name), 0.0) > 0]
 
+        # Other ranked files end at the first file ranked below a share of the best one's
+        other: Dict[str, float] = {}
+        for rank, tag in tags:
+            if not in_focus(tag.rel_fname):
+                other[tag.rel_fname] = max(other.get(tag.rel_fname, 0.0), rank)
+        cutoff = max(other.values(), default=0.0) * self.config.outline.other_files_rank_share
+        tags = [(rank, tag) for rank, tag in tags if in_focus(tag.rel_fname) or other[tag.rel_fname] >= cutoff]
+
         def leaves(budget: int) -> Dict[str, str]:
             """Signature blocks per file, as many of the best ranked tags as fit budget (as in the old signature map)."""
             best: Dict[str, str] = {}
@@ -856,11 +864,7 @@ class RepoMap:
                                        note=own.note if own else None))
                 if note.startswith(" — "):
                     note = " " + note[3:]  # "file.py: note", the colon already separates it
-                parts.append((rel_fname,
-                    f"{first_line}{note}\n"
-                    f"(Rank value: {max_rank:.4f})\n\n" # Added an extra newline here
-                    + "\n".join(code_lines)
-                ))
+                parts.append((rel_fname, f"{first_line}{note}\n" + "\n".join(code_lines)))
         
         return parts
     

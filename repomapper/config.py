@@ -90,6 +90,9 @@ class OutlineConfig:
     # Seeded maps (chat_files, mentioned_files, mentioned_idents): share of the token budget for the trunk (the path from the
     # root to the focused files, folded siblings, Dependencies); the rest goes to signatures
     seeded_trunk_share: float = 0.2
+    # Seeded maps: "Other ranked files" (outside the focused directories) stop at the first file whose rank falls below this
+    # share of the best one's; what follows is mostly generic names. 0 keeps everything that fits the budget.
+    other_files_rank_share: float = 0.7
     # A directory whose biggest subdirectory holds at least this share of its files merges with it into one line
     # (`ui/src/app/`); the files outside show as `(+N files outside)`. Above 1 merges only empty pass-through directories.
     merge_dir_share: float = 0.95

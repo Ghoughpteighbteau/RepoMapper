@@ -495,7 +495,13 @@ def render_outline(
         for rel, block in blocks.items():
             near = max((a for a in hosts if posixpath.dirname(rel) == a or (a and posixpath.dirname(rel).startswith(a + "/"))),
                        key=len, default=None)
-            (hosted[hosts[near].path] if near is not None else loose).append(block)
+            if near is not None:
+                host = hosts[near].path
+                if host and block.startswith(rel + ":"):   # the host's line already shows the directory
+                    block = rel[len(host) + 1:] + block[len(rel):]
+                hosted[host].append(block)
+            else:
+                loose.append(block)
 
         def walk(d: Dir, depth: int):
             indent = "  " * depth
