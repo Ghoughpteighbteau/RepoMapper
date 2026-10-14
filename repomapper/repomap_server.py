@@ -316,9 +316,8 @@ async def search_identifiers(
         
         # Get all tags (definitions and references) for all files
         all_tags = []
-        for file_path in all_files:
-            rel_path = str(Path(file_path).relative_to(project_root))
-            tags = repo_map.get_tags(file_path, rel_path)
+        items = [(file_path, str(Path(file_path).relative_to(project_root))) for file_path in all_files]
+        for _file_path, _rel_path, tags in repo_map.iter_tags(items):
             all_tags.extend(tags)
 
         # Filter tags based on search query and options. Pygments refs also fire on definition sites,

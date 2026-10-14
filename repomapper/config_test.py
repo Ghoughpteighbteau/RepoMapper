@@ -98,3 +98,13 @@ def test_other_files_rank_share_is_configurable(tmp_path):
     write_config(tmp_path, "[outline]\nother_files_rank_share = 0.3\n")
 
     assert load_config(str(tmp_path)).outline.other_files_rank_share == 0.3
+
+
+def test_parse_workers_defaults_to_auto_and_can_be_set(tmp_path):
+    assert Config().map.parse_workers == -1
+    write_config(tmp_path, "[map]\nparse_workers = 0\n")
+
+    config = load_config(str(tmp_path))
+
+    assert config.map.parse_workers == 0
+    assert config.warnings == []

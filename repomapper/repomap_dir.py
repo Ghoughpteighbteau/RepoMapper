@@ -98,6 +98,7 @@ CONFIG_TEMPLATE = """\
 [map]
 # token_limit = 8192
 # ranking_cache = true   # reuse the unseeded ranking while the files, settings and git HEAD are unchanged (.repomap/cache/ranking.v1)
+# parse_workers = -1   # processes that parse files missing from the tags cache: -1 = one per core (up to 16), 0 or 1 = parse in this process
 
 [languages]
 # Files only link through shared names within a language family (a language in none is its own family).

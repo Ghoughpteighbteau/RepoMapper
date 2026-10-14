@@ -590,3 +590,176 @@ def test_other_ranked_files_stop_where_the_rank_falls_below_a_share_of_the_top_f
 
     assert "lib/hub.ts:" in everything and "lib/minor.ts:" in everything
     assert "lib/hub.ts:" in cut and "lib/minor.ts:" not in cut
+
+
+# --- parallel parsing of tag cache misses ---
+
+def many_files(root, count=24):
+    files = {}
+    for i in range(count):
+        files[f"pkg/m{i}.py"] = f"def func_{i}(x):\n    return helper_{(i + 1) % count}(x)\n\ndef helper_{i}(y):\n    return y\n"
+        files[f"web/c{i}.ts"] = f"import {{ f }} from './c{(i + 1) % count}';\nexport function fn{i}() {{ return f(); }}\n"
+    return make_project(root, files)
+
+
+def tag_dump(repo_map, files):
+    return {f: repo_map.get_tags(f, repo_map.get_rel_fname(f)) for f in files}
+
+
+@pytest.fixture
+def pool_spy(monkeypatch):
+    """Lets the pool run for real but records the files it was given."""
+    sent = []
+    real = RepoMap.parse_in_pool
+
+    def spy(self, items, workers, on_result=None):
+        sent.append([fname for fname, _rel in items])
+        return real(self, items, workers, on_result)
+    monkeypatch.setattr(RepoMap, "parse_in_pool", spy)
+    monkeypatch.setattr(repomap_class, "PARALLEL_MIN_MISSES", 5)
+    return sent
+
+
+def with_workers(repo_map, workers):
+    repo_map.config.map.parse_workers = workers
+    repo_map.config.map.ranking_cache = False   # these tests are about parsing, not the ranking cache
+    return repo_map
+
+
+def test_parallel_tags_equal_serial(tmp_path, monkeypatch, pool_spy):
+    files = many_files(tmp_path)
+    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", str(tmp_path / ".cache_serial"))
+    serial = with_workers(make_repomap(tmp_path), 0)
+    serial_ranking = serial.build_ranking([], files)
+    assert pool_spy == []
+
+    monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", str(tmp_path / ".cache_parallel"))
+    parallel = with_workers(make_repomap(tmp_path), 2)
+    parallel_ranking = parallel.build_ranking([], files)
+
+    assert len(pool_spy) == 1 and sorted(pool_spy[0]) == sorted(files)
+    assert tag_dump(parallel, files) == tag_dump(serial, files)
+    assert parallel_ranking.included == serial_ranking.included
+    assert parallel_ranking.file_ranks == serial_ranking.file_ranks
+    assert parallel_ranking.ident_ranks == serial_ranking.ident_ranks
+    assert parallel_ranking.report == serial_ranking.report
+
+
+def test_parallel_results_are_cached_for_the_next_run(tmp_path, pool_spy):
+    files = many_files(tmp_path)
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files)
+    pool_spy.clear()
+
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files)
+
+    assert pool_spy == []
+
+
+def test_only_misses_go_to_the_pool(tmp_path, pool_spy):
+    files = many_files(tmp_path)
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files)
+    pool_spy.clear()
+    touched = files[:10]
+    for f in touched:
+        with open(f, "a") as handle:
+            handle.write("\n# edited\n")
+
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files)
+
+    assert len(pool_spy) == 1 and sorted(pool_spy[0]) == sorted(touched)
+
+
+@pytest.mark.parametrize("workers", [0, 1])
+def test_zero_or_one_worker_is_serial(tmp_path, pool_spy, workers):
+    files = many_files(tmp_path)
+
+    with_workers(make_repomap(tmp_path), workers).build_ranking([], files)
+
+    assert pool_spy == []
+
+
+def test_few_misses_stay_serial(tmp_path, pool_spy, monkeypatch):
+    files = many_files(tmp_path)
+    monkeypatch.setattr(repomap_class, "PARALLEL_MIN_MISSES", len(files) + 1)
+
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files)
+
+    assert pool_spy == []
+
+
+def test_custom_file_reader_stays_serial(tmp_path, pool_spy):
+    files = many_files(tmp_path)
+    repo_map = with_workers(make_repomap(tmp_path), 2)
+    repo_map.read_text_func_internal = lambda fname: read_text(fname)   # a lambda can't reach a worker process
+
+    repo_map.build_ranking([], files)
+
+    assert pool_spy == []
+
+
+def test_force_refresh_reparses_everything_in_the_pool(tmp_path, pool_spy):
+    files = many_files(tmp_path)
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files)
+    pool_spy.clear()
+
+    with_workers(make_repomap(tmp_path), 2).build_ranking([], files, force_refresh=True)
+
+    assert len(pool_spy) == 1 and sorted(pool_spy[0]) == sorted(files)
+
+
+def test_worker_parse_errors_are_merged_and_not_cached(tmp_path, monkeypatch, pool_spy):
+    files = many_files(tmp_path)
+    bad = files[3]
+    real = RepoMap.parse_in_pool
+
+    def failing(self, items, workers, on_result=None):
+        # Report through the return value only, as a pool that failed one file would
+        return {fname: ([], "Error parsing: boom") if fname == bad else result
+                for fname, result in real(self, items, workers).items()}
+    monkeypatch.setattr(RepoMap, "parse_in_pool", failing)
+    repo_map = with_workers(make_repomap(tmp_path), 2)
+
+    ranking = repo_map.build_ranking([], files)
+
+    assert ranking.report.parse_errors == {bad: "Error parsing: boom"}
+    assert bad not in repo_map.TAGS_CACHE
+    assert all(f in repo_map.TAGS_CACHE for f in files if f != bad)
+
+
+def test_errors_reported_through_the_callback_are_merged_once(tmp_path, monkeypatch, pool_spy):
+    files = many_files(tmp_path)
+    bad = files[3]
+    messages = []
+    real = RepoMap.parse_in_pool
+
+    def failing(self, items, workers, on_result=None):
+        results = real(self, items, workers)
+        for fname, (tags, _error) in results.items():
+            on_result(fname, tags, "Error parsing: boom" if fname == bad else None)
+        return results
+    monkeypatch.setattr(RepoMap, "parse_in_pool", failing)
+    repo_map = with_workers(make_repomap(tmp_path), 2)
+    repo_map.output_handlers["error"] = messages.append
+
+    ranking = repo_map.build_ranking([], files)
+
+    assert ranking.report.parse_errors == {bad: "Error parsing: boom"}
+    assert messages == [f"{bad}: Error parsing: boom"]
+    assert bad not in repo_map.TAGS_CACHE
+
+
+def test_a_failing_pool_falls_back_to_serial_parsing(tmp_path, monkeypatch, pool_spy):
+    files = many_files(tmp_path)
+    warnings = []
+
+    def broken(self, items, workers, on_result=None):
+        raise OSError("no processes here")
+    monkeypatch.setattr(RepoMap, "parse_in_pool", broken)
+    repo_map = with_workers(make_repomap(tmp_path), 2)
+    repo_map.output_handlers["warning"] = warnings.append
+
+    ranking = repo_map.build_ranking([], files)
+
+    assert len(ranking.included) == len(files)
+    assert all(f in repo_map.TAGS_CACHE for f in files)
+    assert any("Parallel parsing failed" in w for w in warnings)

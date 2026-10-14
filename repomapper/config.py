@@ -14,6 +14,7 @@ CONFIG_FILE = f"{REPOMAP_DIR}/config.toml"
 class MapConfig:
     token_limit: int = 8192
     ranking_cache: bool = True   # keep the unseeded ranking in .repomap/cache/ranking.v1 (and in memory in the MCP server)
+    parse_workers: int = -1      # processes that parse files missing from the tags cache: -1 auto, 0 or 1 parse in this process
 
 
 @dataclass

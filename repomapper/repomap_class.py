@@ -10,12 +10,14 @@ from pathlib import Path
 from collections import Counter, namedtuple, defaultdict
 from typing import List, Dict, Set, Optional, Tuple, Callable, Any, Union
 import bisect
+import concurrent.futures
 import dataclasses
 import functools
 import hashlib
 import importlib.metadata
 import inspect
 import math
+import multiprocessing
 import shutil
 import sqlite3
 from repomapper.utils import Tag
@@ -277,6 +279,23 @@ class RepoMap:
             return None
         return (st.st_mtime_ns, st.st_size)
 
+    def cached_tags(self, fname: str, stamp: Tuple[int, int]) -> Optional[List[Tag]]:
+        """The cached tags of a file, None unless an entry matches both the stamp and the extractor fingerprint."""
+        try:
+            cached_entry = self.TAGS_CACHE.get(fname)
+            if (cached_entry and cached_entry.get("stamp") == stamp
+                    and cached_entry.get("extractor") == extractor_fingerprint()):
+                return cached_entry["data"]
+        except SQLITE_ERRORS:
+            self.tags_cache_error()
+        return None
+
+    def store_tags(self, fname: str, stamp: Tuple[int, int], tags: List[Tag]):
+        try:
+            self.TAGS_CACHE[fname] = {"stamp": stamp, "extractor": extractor_fingerprint(), "data": tags}
+        except SQLITE_ERRORS:
+            self.tags_cache_error()
+
     def get_tags(self, fname: str, rel_fname: str, force_refresh: bool = False) -> List[Tag]:
         """Get tags for a file, using cache when possible. force_refresh re-parses and overwrites the cache.
 
@@ -286,30 +305,99 @@ class RepoMap:
         stamp = self.get_file_stamp(fname)
         if stamp is None:
             return []
-        fingerprint = extractor_fingerprint()
 
         if not force_refresh:
-            try:
-                cached_entry = self.TAGS_CACHE.get(fname)
-                if (cached_entry and cached_entry.get("stamp") == stamp
-                        and cached_entry.get("extractor") == fingerprint):
-                    return cached_entry["data"]
-            except SQLITE_ERRORS:
-                self.tags_cache_error()
+            tags = self.cached_tags(fname, stamp)
+            if tags is not None:
+                return tags
 
         # Cache miss, file changed, extractor changed, or forced refresh
         tags = self.get_tags_raw(fname, rel_fname)
         if fname in self.parse_errors:
             # Don't cache failures, so they're retried and reported on every run.
             return tags
-
-        try:
-            self.TAGS_CACHE[fname] = {"stamp": stamp, "extractor": fingerprint, "data": tags}
-        except SQLITE_ERRORS:
-            self.tags_cache_error()
-        
+        self.store_tags(fname, stamp, tags)
         return tags
-    
+
+    def iter_tags(self, items: List[Tuple[str, str]], force_refresh: bool = False):
+        """Yield (fname, rel_fname, tags) for every (fname, rel_fname) item, as get_tags would return them.
+
+        Cache hits come first, in order; the misses follow, in order, parsed in a process pool when there are
+        enough of them (see parse_misses). So callers must not depend on the order of the files."""
+        misses: List[Tuple[str, str, Tuple[int, int]]] = []
+        for fname, rel_fname in items:
+            stamp = self.get_file_stamp(fname)
+            if stamp is None:
+                yield fname, rel_fname, []
+                continue
+            tags = None if force_refresh else self.cached_tags(fname, stamp)
+            if tags is None:
+                misses.append((fname, rel_fname, stamp))
+            else:
+                yield fname, rel_fname, tags
+        parsed = self.parse_misses(misses)
+        for fname, rel_fname, _stamp in misses:
+            yield fname, rel_fname, parsed[fname]
+
+    def parse_worker_count(self, misses: int) -> int:
+        """Worker processes for this many cache misses; 0 means parse in this process."""
+        setting = self.config.map.parse_workers
+        if setting == 0 or misses < PARALLEL_MIN_MISSES or self.read_text_func_internal is not read_text:
+            return 0
+        if setting < 0:
+            setting = min(os.process_cpu_count() or 1, MAX_AUTO_PARSE_WORKERS)
+        workers = min(setting, math.ceil(misses / MIN_FILES_PER_WORKER))
+        return workers if workers > 1 else 0
+
+    def parse_misses(self, misses: List[Tuple[str, str, Tuple[int, int]]]) -> Dict[str, List[Tag]]:
+        """Parse files whose tags are not cached and cache the results (not the failures); fname -> tags.
+
+        Many misses go to worker processes; the cache is only ever written from this process."""
+        parsed: Dict[str, List[Tag]] = {}
+        stamps = {fname: stamp for fname, _rel, stamp in misses}
+
+        def finish(fname: str, tags: List[Tag], error: Optional[str]):
+            if error:
+                self.record_parse_error(fname, error)
+            else:
+                self.store_tags(fname, stamps[fname], tags)
+            parsed[fname] = tags
+
+        workers = self.parse_worker_count(len(misses))
+        if workers:
+            try:
+                results = self.parse_in_pool([(fname, rel) for fname, rel, _stamp in misses], workers, finish)
+                for fname, (tags, error) in results.items():
+                    if fname not in parsed:
+                        finish(fname, tags, error)
+            except Exception as e:   # e.g. no way to start processes here: parse the rest serially
+                self.output_handlers['warning'](f"Parallel parsing failed, parsing serially: {e}")
+        for fname, rel_fname, stamp in misses:
+            if fname not in parsed:
+                tags = self.get_tags_raw(fname, rel_fname)
+                if fname not in self.parse_errors:   # the failure was reported by get_tags_raw already
+                    self.store_tags(fname, stamp, tags)
+                parsed[fname] = tags
+        return parsed
+
+    def parse_in_pool(self, items: List[Tuple[str, str]], workers: int,
+                      on_result: Optional[Callable[[str, List[Tag], Optional[str]], None]] = None,
+                      ) -> Dict[str, Tuple[List[Tag], Optional[str]]]:
+        """Parse (fname, rel_fname) items in worker processes; fname -> (tags, error message or None).
+        on_result, if given, is called with each file's result as soon as it arrives, so the caller can cache it
+        while the workers go on."""
+        size = max(1, min(PARSE_CHUNK_FILES, len(items) // (workers * 4)))
+        chunks = [items[i:i + size] for i in range(0, len(items), size)]
+        results: Dict[str, Tuple[List[Tag], Optional[str]]] = {}
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=workers, mp_context=parse_context(), initializer=init_parse_worker) as pool:
+            for chunk_results in pool.map(parse_chunk, chunks):
+                for fname, tags, error in chunk_results:
+                    results[fname] = (tags, error)
+                    if on_result:
+                        on_result(fname, tags, error)
+        return results
+
     def get_pygments_refs(self, fname: str, rel_fname: str, code: str) -> List[Tag]:
         """Extract identifier references from a file using pygments tokens."""
         try:
@@ -597,21 +685,8 @@ class RepoMap:
         all_fnames = list(set(chat_fnames + other_fnames))
         parseable_files = sum(1 for fname in all_fnames if is_parseable(fname))
         
-        included_rel: Set[str] = set()
-        for fname in all_fnames:
-            rel_fname = self.get_rel_fname(fname)
-            
-            if not os.path.exists(fname):
-                reason = "File not found"
-                excluded[fname] = reason
-                self.output_handlers['warning'](f"Repo-map can't include {fname}: {reason}")
-                continue
-                
-            included.append(fname)
-            included_rel.add(rel_fname)
-            
-            tags = self.get_tags(fname, rel_fname, force_refresh)
-            
+        def absorb(rel_fname: str, tags: List[Tag]):
+            nonlocal total_definitions, total_references
             for tag in tags:
                 if tag.kind == "def":
                     defines[tag.name].add(rel_fname)
@@ -627,12 +702,31 @@ class RepoMap:
                     types[rel_fname].add(tag.name)
                 elif tag.kind == "import":
                     imports[rel_fname].append(tag.name)
+
+        included_rel: Set[str] = set()
+        to_read: List[Tuple[str, str]] = []
+        for fname in all_fnames:
+            rel_fname = self.get_rel_fname(fname)
+            
+            if not os.path.exists(fname):
+                reason = "File not found"
+                excluded[fname] = reason
+                self.output_handlers['warning'](f"Repo-map can't include {fname}: {reason}")
+                continue
+                
+            included.append(fname)
+            included_rel.add(rel_fname)
+            to_read.append((fname, rel_fname))
             
             # Seed PageRank from chat files and, more weakly, mentioned files
             if fname in chat_fnames:
                 personalization[rel_fname] = ranking_config.chat_file_personalization
             elif rel_fname in mentioned_fnames:
                 personalization[rel_fname] = ranking_config.mentioned_file_personalization
+
+        # Cache hits are absorbed first, then the files that had to be parsed (possibly in worker processes)
+        for _fname, rel_fname, tags in self.iter_tags(to_read, force_refresh):
+            absorb(rel_fname, tags)
         
         # Build graph: nodes are files, edges numpy arrays (parallel edges allowed, summed by PageRank)
         nodes = list(dict.fromkeys(self.get_rel_fname(fname) for fname in all_fnames))
@@ -1139,3 +1233,73 @@ class RepoMap:
         repo_content += map_string
         
         return repo_content, file_report
+
+
+# Parsing cache misses in worker processes: not worth it below this many misses or this many files per worker
+PARALLEL_MIN_MISSES = 100
+MIN_FILES_PER_WORKER = 8
+MAX_AUTO_PARSE_WORKERS = 16
+PARSE_CHUNK_FILES = 32
+
+
+def parse_context():
+    """Start method for the parse workers: never plain fork (the MCP server has threads)."""
+    method = "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
+    context = multiprocessing.get_context(method)
+    if method == "forkserver":
+        context.set_forkserver_preload(["repomapper.repomap_class"])
+    return context
+
+
+class ParseWorker(RepoMap):
+    """Just enough of a RepoMap to run get_tags_raw in a worker process, reporting errors instead of printing."""
+
+    def __init__(self):   # deliberately not RepoMap.__init__: no config, cache or output handlers here
+        self.read_text_func_internal = read_text
+        self.parse_errors: Dict[str, str] = {}
+
+    def record_parse_error(self, fname: str, message: str):
+        self.parse_errors[fname] = message
+
+
+PARSE_WORKER: Optional[ParseWorker] = None
+
+
+def init_parse_worker():
+    """Per worker process, once: keep stdout clean for protocols that use it, and reuse parsers and compiled queries
+    across files (get_tags_raw builds them per file, which is a third of its time) without touching its source."""
+    global PARSE_WORKER
+    import grep_ast.tsl
+    import tree_sitter
+    sys.stdout = sys.stderr
+    parsers: Dict[str, Any] = {}
+    queries: Dict[Tuple[int, str], Tuple[Any, Any]] = {}
+    get_parser = grep_ast.tsl.get_parser
+    query_class = tree_sitter.Query
+
+    def cached_parser(lang):
+        if lang not in parsers:
+            parsers[lang] = get_parser(lang)
+        return parsers[lang]
+
+    def cached_query(language, text):
+        key = (id(language), text)
+        if key not in queries:
+            queries[key] = (language, query_class(language, text))   # holds the language so its id stays unique
+        return queries[key][1]
+
+    grep_ast.tsl.get_parser = cached_parser
+    tree_sitter.Query = cached_query
+    PARSE_WORKER = ParseWorker()
+
+
+def parse_chunk(items: List[Tuple[str, str]]) -> List[Tuple[str, List[Tag], Optional[str]]]:
+    """Worker side: (fname, tags, error) for each (fname, rel_fname)."""
+    if PARSE_WORKER is None:
+        init_parse_worker()
+    results = []
+    for fname, rel_fname in items:
+        PARSE_WORKER.parse_errors.clear()
+        tags = PARSE_WORKER.get_tags_raw(fname, rel_fname)
+        results.append((fname, tags, PARSE_WORKER.parse_errors.get(fname)))
+    return results
