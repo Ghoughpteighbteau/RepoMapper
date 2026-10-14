@@ -375,11 +375,11 @@ repomap-mcp --root /path/to/project
 
 ## Benchmarks
 
-`uv run python scripts/bench.py [--repo this|services|django|all] [--runs 3] [--cold]` times the map, seeded maps and
+`uv run python scripts/bench.py [--repo services|this|django|all] [--runs 3] [--cold]` times the map, seeded maps and
 search in process and records output size (tokens, lines) at 4096 and 20000 tokens. The seeds per repo are the `CASES`
 dict at the top of the script; `SERVICES_ROOT` and `DJANGO_ROOT` locate the other targets. Results go to
-`bench/results/<date>-<sha>[-dirty].json` (commit those for this repo); runs that include services or django are named
-`*.local.json` and gitignored. Compare two runs with `uv run python scripts/bench.py --compare OLD.json NEW.json`
+`bench/results/<date>-<sha>[-dirty][-<targets>].json`; commit them, each records every target repo's HEAD and dirty flag.
+The default target is services (this repo when it is not found). Compare two runs with `uv run python scripts/bench.py --compare OLD.json NEW.json`
 (regressions over 10% are flagged).
 
 ## Changelog

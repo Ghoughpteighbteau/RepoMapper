@@ -11,7 +11,7 @@ def test_summarize_and_names():
     s = bench.summarize([3.0, 1.0, 2.0])
     assert s["median"] == 2.0 and s["min"] == 1.0 and s["runs"] == [3.0, 1.0, 2.0]
     assert bench.result_name("2026-10-14", "abc1234", True) == "2026-10-14-abc1234-dirty.json"
-    assert bench.result_name("2026-10-14", "abc1234", False, ["services"]) == "2026-10-14-abc1234-services.local.json"
+    assert bench.result_name("2026-10-14", "abc1234", False, ["services"]) == "2026-10-14-abc1234-services.json"
 
 
 def test_compare_table_flags_regressions_and_missing():

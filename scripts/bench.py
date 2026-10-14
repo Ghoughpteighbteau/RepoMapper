@@ -1,7 +1,7 @@
 """Benchmark RepoMapper speed and output size, and compare two result files.
 
-    uv run python scripts/bench.py                       # this repo, 3 runs
-    uv run python scripts/bench.py --repo all --cold     # + services, django, cold tags cache
+    uv run python scripts/bench.py                       # services (this repo if it is missing), 3 runs
+    uv run python scripts/bench.py --repo all --cold     # this repo + services + django, cold tags cache
     uv run python scripts/bench.py --compare OLD.json NEW.json
 
 Targets: this repo, services (SERVICES_ROOT, default ~/dev/ls/services), django (DJANGO_ROOT, default
@@ -17,9 +17,9 @@ Time cases (wall seconds, in process, same RepoMap calls as the CLI; median and 
 Size cases: size.<case>@4096 and @20000 as {tokens, lines} (gpt-4 token counter), size.search as {chars, more_hits}.
 
 Output: JSON with "meta" and one key per target holding the cases. Default path
-bench/results/<date>-<sha>[-dirty].json (commit those); if any target other than this repo ran, the name gets the targets
-and ends in -services.local.json etc. instead (gitignored: services/django depend on your working tree). Run `--repo this` and
-`--repo services` separately to get both. --compare prints a table, flags regressions above 10%, exits 0.
+bench/results/<date>-<sha>[-dirty][-<targets>].json: the targets other than this repo ran are in the name
+(2026-10-14-abc1234-services.json). Commit them all; each file records the HEAD and dirty flag of every target repo in
+"meta", because services is a working branch. --compare prints a table, flags regressions above 10%, exits 0.
 The parse pool re-imports __main__, hence the main guard.
 """
 
@@ -79,8 +79,8 @@ def summarize(times):
 
 
 def result_name(date, sha, dirty, others=()):
-    """`others`: targets other than this repo that ran; they go in the name, which then ends in .local.json."""
-    tail = "".join(f"-{t}" for t in others) + ".local" if others else ""
+    """`others`: targets other than this repo that ran; they go in the name."""
+    tail = "".join(f"-{t}" for t in others)
     return f"{date}-{sha}{'-dirty' if dirty else ''}{tail}.json"
 
 
@@ -253,9 +253,10 @@ def metadata(targets, roots, args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", choices=["this", "services", "django", "all"], default="this")
+    p.add_argument("--repo", choices=["this", "services", "django", "all"], default=None,
+                   help="default: services, or this repo when services is not found")
     p.add_argument("--runs", type=int, default=3)
-    p.add_argument("--out", help="result path (default bench/results/<date>-<sha>[-dirty][.local].json)")
+    p.add_argument("--out", help="result path (default bench/results/<date>-<sha>[-dirty][-<targets>].json)")
     p.add_argument("--cold", action="store_true", help="also time a cold tags cache (slow on services)")
     p.add_argument("--compare", nargs=2, metavar=("A", "B"), help="print a table comparing two result files")
     args = p.parse_args(argv)
@@ -269,7 +270,8 @@ def main(argv=None):
         print(f"note: {msg}", file=sys.stderr)
 
     roots = target_roots()
-    wanted = ["this", "services", "django"] if args.repo == "all" else [args.repo]
+    repo = args.repo or ("services" if os.path.isdir(roots["services"]) else "this")
+    wanted = ["this", "services", "django"] if repo == "all" else [repo]
     targets = []
     for name in wanted:
         if os.path.isdir(roots[name]):
