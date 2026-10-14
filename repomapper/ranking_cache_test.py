@@ -334,8 +334,8 @@ def test_writes_leave_no_temp_files_and_replace_atomically(tmp_path, computes, m
 
     make_repomap(tmp_path).build_ranking([], files)
 
-    assert replaced and replaced[0][1] == str(cache_file(tmp_path))
-    assert replaced[0][0] != replaced[0][1]
+    assert str(cache_file(tmp_path)) in [dst for _src, dst in replaced]   # and the base graph's file
+    assert all(src != dst for src, dst in replaced)
     assert not [p for p in cache_file(tmp_path).parent.iterdir() if p.name.endswith(".tmp")]
 
 

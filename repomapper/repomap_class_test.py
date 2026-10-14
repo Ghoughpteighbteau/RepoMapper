@@ -382,7 +382,7 @@ def test_core_importance_multiplies_the_pagerank_result(tmp_path):
 def test_seeded_ranking_ignores_importance(tmp_path):
     files = make_project(tmp_path, PROJECT)
     plain = make_repomap(tmp_path).build_ranking([files[1]], files).file_ranks
-    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap").mkdir(exist_ok=True)   # the first build stored its base graph under .repomap/cache
     (tmp_path / ".repomap" / "areas.toml").write_text('[paths."core.ts"]\nimportance = "low"\n')
     tilted = make_repomap(tmp_path).build_ranking([files[1]], files).file_ranks
 

@@ -113,3 +113,35 @@ class OutlinePairs:
     nodes: List[str]
     named: PairSums
     imports: PairSums
+
+
+@dataclass
+class BaseGraph:
+    """What a ranking needs from the files, whatever the seeds: the reference graph before anything seed specific is
+    applied, and the definitions. Seeds change only the weights of mentioned identifiers (`name_mul`) and of edges
+    leaving chat files, the personalization, and the ranks derived from those, so a stored BaseGraph serves any
+    seed set. Rankings share it, so nothing may change its arrays or dicts."""
+    nodes: List[str]                 # rel_fname per node: every file considered, in the order the graph was built
+    included: List[str]              # absolute paths of the files that exist, in node order
+    names: List[str]                 # identifiers with a definer and a referencing file elsewhere in the family
+    name_definers: np.ndarray        # int32 per name: files defining it
+    name_mul: np.ndarray             # float64 per name: identifier_weight without a mentioned-identifier boost
+    src: np.ndarray                  # int32 per reference edge: referencing file
+    dst: np.ndarray                  # int32 per reference edge: defining file
+    name_id: np.ndarray              # int32 per reference edge: index into names
+    counts: np.ndarray               # int32 per reference edge: references in the source file (weight is sqrt)
+    import_src: np.ndarray           # int32 per import edge
+    import_dst: np.ndarray
+    import_weight: np.ndarray        # float64, before the chat-file multiplier
+    definitions: Dict[str, set]      # rel_fname -> def names
+    nested: Dict[str, set]           # rel_fname -> names only defined inside functions
+    types: Dict[str, set]            # rel_fname -> names of classes, interfaces, types, enums
+    def_file: np.ndarray             # int32 per definition tag, ordered by position in included, then source order
+    def_line: np.ndarray             # int32
+    def_name: np.ndarray             # int32 index into def_names
+    def_names: List[str]
+    excluded: Dict[str, str]         # missing files (a base with any is never stored)
+    definition_matches: int
+    reference_matches: int
+    parseable_files: int
+    reads: List[Tuple[str, Optional[Tuple[int, int]]]]   # unlisted files import resolution read, with their stamps

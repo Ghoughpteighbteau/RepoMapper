@@ -1,4 +1,11 @@
-"""Persisted unseeded rankings: `.repomap/cache/ranking.v1` on disk, plus a small in-process memo for the MCP server.
+"""Persisted rankings: `.repomap/cache/ranking.v1` (the unseeded ranking) and `.repomap/cache/graph.v1` (the base graph
+every ranking starts from), on disk, plus small in-process memos for the MCP server.
+
+The base graph (graph.v1) is what the files give whatever the seeds are: reference edges as per-name counts, import
+edges, definitions and their lines. Chat files, mentioned files and identifiers only reweight edges and set the
+personalization, which a seeded build redoes (vectorized) on top of the stored graph. Its key is the ranking key
+without what only the history part reads (HEAD, the day) or the outline does, and it covers the stamps of every file
+considered, chat files included. It is stored by any build, seeded or not, unless a file was missing or failed to parse.
 
 Building the ranking (parsing is cached per file already; this is bucketing tags, the reference graph, PageRank) takes
 seconds on a big repo, and for an unseeded map (no chat files, mentions) its result only depends on the files, the
@@ -25,10 +32,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from repomapper.graph import OutlinePairs, PairSums, RefGraph
+from repomapper.graph import BaseGraph, OutlinePairs, PairSums, RefGraph
 
 RANKING_CACHE_VERSION = 1
 RANKING_CACHE_FILE = f"ranking.v{RANKING_CACHE_VERSION}"
+GRAPH_CACHE_VERSION = 1
+GRAPH_CACHE_FILE = f"graph.v{GRAPH_CACHE_VERSION}"
 ACTIVITY_BUCKET_SECONDS = 86400   # history activity decays continuously; a stored ranking is good for the day it was made
 MEMO_ROOTS = 4                    # roots kept in the in-process memo
 
@@ -120,32 +129,45 @@ def cache_path(root: str, cache_dir: str) -> str:
     return os.path.join(root, cache_dir, RANKING_CACHE_FILE)
 
 
+def graph_cache_path(root: str, cache_dir: str) -> str:
+    return os.path.join(root, cache_dir, GRAPH_CACHE_FILE)
+
+
 def header(key: str) -> bytes:
     return f"repomap-ranking v{RANKING_CACHE_VERSION} {key}\n".encode()
 
 
-def load(path: str, key: str):
-    """(Ranking, reads) from the file if it holds this key, else None. Never raises."""
+def graph_header(key: str) -> bytes:
+    return f"repomap-graph v{GRAPH_CACHE_VERSION} {key}\n".encode()
+
+
+def read_payload(path: str, expected_header: bytes, unpack_fn):
+    """unpack_fn(payload) of the file if it starts with expected_header, else None. Never raises."""
     try:
         with open(path, "rb") as f:
-            if f.readline() != header(key):
+            if f.readline() != expected_header:
                 return None
             payload = pickle.loads(zlib.decompress(f.read()))
-        return unpack(payload)
+        return unpack_fn(payload)
     except Exception:   # corrupt, torn, other version or fields: recompute
         return None
 
 
-def store(path: str, key: str, payload: Dict[str, Any]) -> None:
+def load(path: str, key: str):
+    """(Ranking, reads) from the file if it holds this key, else None. Never raises."""
+    return read_payload(path, header(key), unpack)
+
+
+def write_payload(path: str, head: bytes, payload: Dict[str, Any]) -> None:
     """Write atomically (temp file in the same directory, then rename); failures are ignored."""
     tmp = None
     try:
         directory = os.path.dirname(path)
         os.makedirs(directory, exist_ok=True)
         body = zlib.compress(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL), 1)
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{RANKING_CACHE_FILE}.", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp")
         with os.fdopen(fd, "wb") as f:
-            f.write(header(key))
+            f.write(head)
             f.write(body)
         os.replace(tmp, path)
         tmp = None
@@ -159,29 +181,85 @@ def store(path: str, key: str, payload: Dict[str, Any]) -> None:
                 pass
 
 
-# In-process memo for long-lived callers (the MCP server): one entry per root, least recently used dropped.
-_memo: "OrderedDict[str, Tuple[str, Any, list]]" = OrderedDict()
-_memo_lock = threading.Lock()
+def store(path: str, key: str, payload: Dict[str, Any]) -> None:
+    write_payload(path, header(key), payload)
+
+
+def pack_graph(base: BaseGraph) -> Dict[str, Any]:
+    """The base graph's fields as a payload (arrays pickle compactly)."""
+    return {field: getattr(base, field) for field in BaseGraph.__dataclass_fields__}
+
+
+def unpack_graph(payload: Dict[str, Any]) -> BaseGraph:
+    """Rebuild the BaseGraph from a payload; raises on anything that doesn't fit."""
+    if set(payload) != set(BaseGraph.__dataclass_fields__):
+        raise ValueError("fields differ")
+    base = BaseGraph(**payload)
+    edges, imports, defs = (len(base.src), len(base.import_src), len(base.def_file))
+    if not (edges == len(base.dst) == len(base.name_id) == len(base.counts)
+            and imports == len(base.import_dst) == len(base.import_weight)
+            and defs == len(base.def_line) == len(base.def_name)
+            and len(base.names) == len(base.name_definers) == len(base.name_mul)):
+        raise ValueError("array lengths differ")
+    n = len(base.nodes)
+    for array, limit in ((base.src, n), (base.dst, n), (base.import_src, n), (base.import_dst, n),
+                         (base.name_id, len(base.names)), (base.def_file, len(base.included)),
+                         (base.def_name, len(base.def_names))):
+        if len(array) and (array.min() < 0 or array.max() >= limit):
+            raise ValueError("index out of range")
+    base.reads = [tuple(read) for read in base.reads]
+    return base
+
+
+def load_graph(path: str, key: str) -> Optional[BaseGraph]:
+    """The BaseGraph from the file if it holds this key, else None. Never raises."""
+    return read_payload(path, graph_header(key), unpack_graph)
+
+
+def store_graph(path: str, key: str, base: BaseGraph) -> None:
+    write_payload(path, graph_header(key), pack_graph(base))
+
+
+class Memo:
+    """In-process memo for long-lived callers (the MCP server): one entry per root, least recently used dropped."""
+
+    def __init__(self):
+        self.entries: "OrderedDict[str, Tuple[str, Any, list]]" = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, root: str, key: str):
+        """(value, reads) remembered for root under key, else None."""
+        with self.lock:
+            entry = self.entries.get(root)
+            if entry is None or entry[0] != key:
+                return None
+            self.entries.move_to_end(root)
+            return entry[1], entry[2]
+
+    def put(self, root: str, key: str, value, reads: list) -> None:
+        with self.lock:
+            self.entries[root] = (key, value, reads)
+            self.entries.move_to_end(root)
+            while len(self.entries) > MEMO_ROOTS:
+                self.entries.popitem(last=False)
+
+    def clear(self) -> None:
+        with self.lock:
+            self.entries.clear()
+
+
+ranking_memo = Memo()   # unseeded Rankings
+graph_memo = Memo()     # BaseGraphs
 
 
 def memo_get(root: str, key: str):
-    """(Ranking, reads) remembered for root under key, else None."""
-    with _memo_lock:
-        entry = _memo.get(root)
-        if entry is None or entry[0] != key:
-            return None
-        _memo.move_to_end(root)
-        return entry[1], entry[2]
+    return ranking_memo.get(root, key)
 
 
 def memo_put(root: str, key: str, ranking, reads: list) -> None:
-    with _memo_lock:
-        _memo[root] = (key, ranking, reads)
-        _memo.move_to_end(root)
-        while len(_memo) > MEMO_ROOTS:
-            _memo.popitem(last=False)
+    ranking_memo.put(root, key, ranking, reads)
 
 
 def memo_clear() -> None:
-    with _memo_lock:
-        _memo.clear()
+    ranking_memo.clear()
+    graph_memo.clear()

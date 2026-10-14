@@ -36,7 +36,7 @@ from repomapper.outline import OutlineFile, find_docs, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
 from repomapper.imports import IMPORT_RE, ImportResolver, extract_imports, load_packages
-from repomapper.graph import OutlinePairs, PairSums, RefGraph, ident_ranks as ident_rank_sums, pagerank
+from repomapper.graph import BaseGraph, OutlinePairs, PairSums, RefGraph, ident_ranks as ident_rank_sums, pagerank
 from repomapper.history import History, activity_factors, head_commit, read_history
 from repomapper import ranking_cache
 
@@ -68,6 +68,9 @@ class Ranking:
     # The graph's edges as the outline reads them. A ranking loaded from disk has only these (its graph is a stub
     # holding the node list); a fresh one gets them when it is stored, or from outline_inputs.
     pair_edges: Optional[OutlinePairs] = None
+    # The seed independent graph this ranking was made from (shared, not to be changed); None for one loaded from
+    # ranking.v1, which has only the numbers.
+    base: Optional[BaseGraph] = None
 
 
 
@@ -530,6 +533,50 @@ class RepoMap:
         """Definition tags of a ranking, best first, with the boosts for mentioned and chat files and identifiers."""
         if ranking.graph is None:
             return []
+        if ranking.base is None:   # loaded from ranking.v1, which keeps no definition lines: read the files' tags
+            return self.ranked_tags_from_files(ranking)
+        base = ranking.base
+        ranks, ident_ranks = ranking.file_ranks, ranking.ident_ranks
+        mentioned_fnames, mentioned_idents = ranking.mentioned_fnames, ranking.mentioned_idents
+        chat_rel_fnames = ranking.chat_rel_fnames
+        def_boost = self.config.ranking.definition_boost
+        bounds = np.searchsorted(base.def_file, np.arange(len(base.included) + 1)).tolist()
+        lines, name_ids, def_names = base.def_line.tolist(), base.def_name.tolist(), base.def_names
+
+        ranked_tags = []
+        for pos, fname in enumerate(base.included):
+            lo, hi = bounds[pos], bounds[pos + 1]
+            if lo == hi:
+                continue
+            rel_fname = self.get_rel_fname(fname)
+            file_rank = ranks.get(rel_fname, 0.0)
+
+            # Exclude files with low Page Rank if exclude_unranked is True
+            if self.exclude_unranked and file_rank <= 0.0001:  # Use a small threshold to exclude near-zero ranks
+                continue
+
+            # Boosts multiply in the same order as in ranked_tags_from_files, so the ranks are the same floats
+            plain = ident = 1.0
+            ident *= def_boost.mentioned_ident
+            if rel_fname in mentioned_fnames:
+                plain *= def_boost.mentioned_file
+                ident *= def_boost.mentioned_file
+            if rel_fname in chat_rel_fnames:
+                plain *= def_boost.chat_file
+                ident *= def_boost.chat_file
+            tie = file_rank * 1e-3   # file rank breaks ties between unreferenced definitions
+            for i in range(lo, hi):
+                name = def_names[name_ids[i]]
+                boost = ident if name in mentioned_idents else plain
+                ranked_tags.append(((ident_ranks.get((rel_fname, name), 0.0) + tie) * boost,
+                                    Tag(rel_fname, fname, lines[i], name, "def")))
+
+        # Sort by rank (descending)
+        ranked_tags.sort(key=lambda x: x[0], reverse=True)
+        return ranked_tags
+
+    def ranked_tags_from_files(self, ranking: "Ranking") -> List[Tuple[float, Tag]]:
+        """ranked_tags_of for a ranking that has no base graph: reads every file's tags."""
         ranks, ident_ranks = ranking.file_ranks, ranking.ident_ranks
         mentioned_fnames, mentioned_idents = ranking.mentioned_fnames, ranking.mentioned_idents
         chat_rel_fnames = ranking.chat_rel_fnames
@@ -660,17 +707,66 @@ class RepoMap:
         force_refresh: bool = False,
         reads: Optional[Dict[str, ranking_cache.Stamp]] = None,
     ) -> "Ranking":
-        """build_ranking without the cache; paths are absolute and normalized. reads, if given, collects the
-        (root-relative path -> stamp) of every unlisted file the import resolution looked at."""
+        """build_ranking without the unseeded-ranking cache; paths are absolute and normalized. reads, if given,
+        collects the (root-relative path -> stamp) of every unlisted file the import resolution looked at.
+
+        The seed independent part (tags, reference graph, imports) comes from the base graph cache when it can."""
+        all_fnames = list(set(chat_fnames + other_fnames))
+        base = self.base_graph(all_fnames, force_refresh, reads)
+        return self.rank_base(base, chat_fnames, all_fnames, mentioned_fnames, mentioned_idents)
+
+    def graph_key(self, stamps: List[Tuple[str, ranking_cache.Stamp]]) -> str:
+        """Key of everything the base graph reads besides the listed files' tags: the extractor, the settings and
+        areas of the ranking, and the files' stamps. Not HEAD or the day (history only enters the seeded part), nor
+        the outline and git settings."""
+        return ranking_cache.make_key(
+            ["graph", ranking_cache.GRAPH_CACHE_VERSION, extractor_fingerprint(), str(self.root), self.config.ranking,
+             self.config.languages.families, self.areas.entries, self.areas.globs,
+             tuple(BaseGraph.__dataclass_fields__)],
+            stamps)
+
+    def base_graph(self, all_fnames: List[str], force_refresh: bool = False,
+                   reads: Optional[Dict[str, ranking_cache.Stamp]] = None) -> BaseGraph:
+        """The seed independent graph of the files: from the in-process memo or .repomap/cache/graph.v1 while nothing
+        it depends on has changed, else built (and stored)."""
+        if not self.config.map.ranking_cache:
+            return self.build_base_graph(all_fnames, force_refresh, reads)
+        root = str(self.root)
+        stamps = [(fname, ranking_cache.stamp_of(fname)) for fname in all_fnames]
+        if any(stamp is None for _fname, stamp in stamps):
+            return self.build_base_graph(all_fnames, force_refresh, reads)
+        key = self.graph_key(stamps)
+        if not force_refresh:
+            hit = ranking_cache.graph_memo.get(root, key)
+            base = hit[0] if hit else None
+            from_memo = base is not None
+            if base is None:
+                base = ranking_cache.load_graph(ranking_cache.graph_cache_path(root, CACHE_DIR), key)
+            if base is not None and ranking_cache.reads_valid(root, base.reads):
+                if not from_memo:
+                    ranking_cache.graph_memo.put(root, key, base, [])
+                if reads is not None:
+                    reads.update(base.reads)
+                return base
+        own_reads: Dict[str, ranking_cache.Stamp] = {}
+        base = self.build_base_graph(all_fnames, force_refresh, own_reads)
+        if reads is not None:
+            reads.update(own_reads)
+        # Parse errors and missing files must be reported by every run, so those graphs are not kept
+        if not base.excluded and not self.parse_errors:
+            ranking_cache.graph_memo.put(root, key, base, [])
+            ranking_cache.store_graph(ranking_cache.graph_cache_path(root, CACHE_DIR), key, base)
+        return base
+
+    def build_base_graph(self, all_fnames: List[str], force_refresh: bool = False,
+                         reads: Optional[Dict[str, ranking_cache.Stamp]] = None) -> BaseGraph:
+        """Read every file's tags and build the reference and import edges, with nothing seed specific applied."""
         ranking_config = self.config.ranking
-        # Initialize file report
         included: List[str] = []
         excluded: Dict[str, str] = {}
-        input_files: Dict[str, Dict] = {}
         total_definitions = 0
         total_references = 0
-        
-        # Collect all tags
+
         defines = defaultdict(set)
         references = defaultdict(Counter)
         definitions = defaultdict(set)
@@ -678,13 +774,10 @@ class RepoMap:
         types: Dict[str, Set[str]] = defaultdict(set)
         def_counts: Counter = Counter()
         imports: Dict[str, List[str]] = defaultdict(list)   # rel_fname -> module specifiers
-        
-        personalization = {}
-        chat_rel_fnames = set(self.get_rel_fname(f) for f in chat_fnames)
-        
-        all_fnames = list(set(chat_fnames + other_fnames))
+        def_rows: List[Tuple[str, int, str]] = []            # (rel_fname, line, name) of every definition tag
+
         parseable_files = sum(1 for fname in all_fnames if is_parseable(fname))
-        
+
         def absorb(rel_fname: str, tags: List[Tag]):
             nonlocal total_definitions, total_references
             for tag in tags:
@@ -692,6 +785,7 @@ class RepoMap:
                     defines[tag.name].add(rel_fname)
                     definitions[rel_fname].add(tag.name)
                     def_counts[(rel_fname, tag.name)] += 1
+                    def_rows.append((rel_fname, tag.line, tag.name))
                     total_definitions += 1
                 elif tag.kind == "ref":
                     references[tag.name][rel_fname] += 1
@@ -707,28 +801,20 @@ class RepoMap:
         to_read: List[Tuple[str, str]] = []
         for fname in all_fnames:
             rel_fname = self.get_rel_fname(fname)
-            
             if not os.path.exists(fname):
                 reason = "File not found"
                 excluded[fname] = reason
                 self.output_handlers['warning'](f"Repo-map can't include {fname}: {reason}")
                 continue
-                
             included.append(fname)
             included_rel.add(rel_fname)
             to_read.append((fname, rel_fname))
-            
-            # Seed PageRank from chat files and, more weakly, mentioned files
-            if fname in chat_fnames:
-                personalization[rel_fname] = ranking_config.chat_file_personalization
-            elif rel_fname in mentioned_fnames:
-                personalization[rel_fname] = ranking_config.mentioned_file_personalization
 
         # Cache hits are absorbed first, then the files that had to be parsed (possibly in worker processes)
         for _fname, rel_fname, tags in self.iter_tags(to_read, force_refresh):
             absorb(rel_fname, tags)
-        
-        # Build graph: nodes are files, edges numpy arrays (parallel edges allowed, summed by PageRank)
+
+        # Graph: nodes are files, edges numpy arrays (parallel edges allowed, summed by PageRank)
         nodes = list(dict.fromkeys(self.get_rel_fname(fname) for fname in all_fnames))
         node_index = {rel: i for i, rel in enumerate(nodes)}
 
@@ -738,36 +824,31 @@ class RepoMap:
         file_family = np.zeros(len(nodes), dtype=np.int64)
         for fname in all_fnames:
             file_family[node_index[self.get_rel_fname(fname)]] = family_ids.setdefault(family(fname), len(family_ids))
-        chat_nodes = np.zeros(len(nodes), dtype=bool)
-        for rel in chat_rel_fnames:
-            if rel in node_index:
-                chat_nodes[node_index[rel]] = True
         edge_src: List[int] = []
         edge_dst: List[int] = []
-        edge_weight: List[float] = []
+        edge_count: List[int] = []
         edge_name: List[int] = []
         names: List[str] = []
+        name_definers: List[int] = []
+        name_mul: List[float] = []
         for name, ref_counts in references.items():
             def_fnames = defines.get(name, set())
             if not def_fnames:
                 continue
-            mul = identifier_weight(name, len(def_fnames), mentioned_idents, ranking_config.identifier_weight)
             name_id = len(names)
             names.append(name)
+            name_definers.append(len(def_fnames))
+            name_mul.append(identifier_weight(name, len(def_fnames), set(), ranking_config.identifier_weight))
             ref_idx = [node_index[rel] for rel in ref_counts]
-            weights = [mul * math.sqrt(count) for count in ref_counts.values()]
+            counts = list(ref_counts.values())
             for def_fname in def_fnames:
                 edge_src += ref_idx
                 edge_dst += [node_index[def_fname]] * len(ref_idx)
-                edge_weight += weights
+                edge_count += counts
                 edge_name += [name_id] * len(ref_idx)
         src = np.array(edge_src, dtype=np.int64)
         dst = np.array(edge_dst, dtype=np.int64)
-        weight = np.array(edge_weight, dtype=float)
-        name_id = np.array(edge_name, dtype=np.int64)
         keep = (src != dst) & (file_family[src] == file_family[dst])
-        weight = np.where(chat_nodes[src], weight * ranking_config.chat_file_ref_weight, weight)[keep]
-        src, dst, name_id = src[keep], dst[keep], name_id[keep]
 
         # Import edges, importer -> imported file(s); a barrel import shares one import's weight among its files
         imp_src: List[int] = []
@@ -792,27 +873,86 @@ class RepoMap:
                         for target in found:
                             targets[target] -= 1 - 1 / len(found)
                 for target, share in targets.items():
-                    weight_ = ranking_config.import_weight * min(share, 1.0)
-                    if rel_fname in chat_rel_fnames:
-                        weight_ *= ranking_config.chat_file_ref_weight
                     imp_src.append(node_index[rel_fname])
                     imp_dst.append(node_index[target])
-                    imp_weight.append(weight_)
+                    imp_weight.append(ranking_config.import_weight * min(share, 1.0))
+
+        # Definition tags ordered by file position, then source order, as every included file's tags would be read
+        position = {self.get_rel_fname(fname): i for i, fname in enumerate(included)}
+        def_names: Dict[str, int] = {}
+        def_file = np.array([position[rel] for rel, _line, _name in def_rows], dtype=np.int64)
+        order = np.argsort(def_file, kind="stable")
+        def_line = np.array([line for _rel, line, _name in def_rows], dtype=np.int64)[order]
+        def_name = np.array([def_names.setdefault(name, len(def_names)) for _rel, _line, name in def_rows],
+                            dtype=np.int64)[order]
+
+        # A name also defined outside functions in the same file is no local helper
+        nested = {rel: {name for name, n in counts.items() if n == def_counts[(rel, name)]}
+                  for rel, counts in nested.items()}
+        i32 = np.int32
+        return BaseGraph(
+            nodes, included, names, np.array(name_definers, dtype=i32), np.array(name_mul, dtype=float),
+            src[keep].astype(i32), dst[keep].astype(i32), np.array(edge_name, dtype=i32)[keep],
+            np.array(edge_count, dtype=i32)[keep],
+            np.array(imp_src, dtype=i32), np.array(imp_dst, dtype=i32), np.array(imp_weight, dtype=float),
+            definitions, nested, dict(types), def_file[order].astype(i32), def_line.astype(i32), def_name.astype(i32),
+            list(def_names), excluded, total_definitions, total_references, parseable_files,
+            sorted(reads.items()) if reads is not None else [])
+
+    def rank_base(self, base: BaseGraph, chat_fnames: List[str], all_fnames: List[str],
+                  mentioned_fnames: Set[str], mentioned_idents: Set[str]) -> "Ranking":
+        """The seed specific part of a ranking: weights of mentioned identifiers and chat-file edges, personalization,
+        PageRank and ident ranks."""
+        ranking_config = self.config.ranking
+        nodes, included = base.nodes, base.included
+        excluded = dict(base.excluded)
+        node_index = {rel: i for i, rel in enumerate(nodes)}
+        chat_rel_fnames = set(self.get_rel_fname(f) for f in chat_fnames)
+
+        # Seed PageRank from chat files and, more weakly, mentioned files
+        personalization = {}
+        chat_set = set(chat_fnames)
+        for fname in included:
+            rel_fname = self.get_rel_fname(fname)
+            if fname in chat_set:
+                personalization[rel_fname] = ranking_config.chat_file_personalization
+            elif rel_fname in mentioned_fnames:
+                personalization[rel_fname] = ranking_config.mentioned_file_personalization
+
+        chat_nodes = np.zeros(len(nodes), dtype=bool)
+        for rel in chat_rel_fnames:
+            if rel in node_index:
+                chat_nodes[node_index[rel]] = True
+        src, dst = base.src.astype(np.int64), base.dst.astype(np.int64)
+        name_mul = base.name_mul
+        if mentioned_idents:
+            name_mul = name_mul.copy()
+            name_index = {name: i for i, name in enumerate(base.names)}
+            for ident in mentioned_idents:
+                i = name_index.get(ident)
+                if i is not None:
+                    name_mul[i] = identifier_weight(ident, int(base.name_definers[i]), mentioned_idents,
+                                                    ranking_config.identifier_weight)
+        weight = name_mul[base.name_id] * np.sqrt(base.counts.astype(float))
+        weight = np.where(chat_nodes[src], weight * ranking_config.chat_file_ref_weight, weight)
+        imp_src, imp_dst = base.import_src.astype(np.int64), base.import_dst.astype(np.int64)
+        imp_weight = np.where(chat_nodes[imp_src], base.import_weight * ranking_config.chat_file_ref_weight,
+                              base.import_weight)
         graph = RefGraph(
             nodes,
-            np.concatenate([src, np.array(imp_src, dtype=np.int64)]),
-            np.concatenate([dst, np.array(imp_dst, dtype=np.int64)]),
-            np.concatenate([weight, np.array(imp_weight, dtype=float)]),
-            np.concatenate([name_id, np.full(len(imp_src), -1, dtype=np.int64)]),
-            names,
+            np.concatenate([src, imp_src]),
+            np.concatenate([dst, imp_dst]),
+            np.concatenate([weight, imp_weight]),
+            np.concatenate([base.name_id.astype(np.int64), np.full(len(imp_src), -1, dtype=np.int64)]),
+            base.names,
         )
 
         if not nodes:
-            report = FileReport(excluded, total_definitions, total_references, len(all_fnames),
-                                dict(self.parse_errors), parseable_files=parseable_files)
-            return Ranking(None, {}, {}, included, definitions, report, mentioned_fnames, mentioned_idents,
+            report = FileReport(excluded, base.definition_matches, base.reference_matches, len(all_fnames),
+                                dict(self.parse_errors), parseable_files=base.parseable_files)
+            return Ranking(None, {}, {}, included, base.definitions, report, mentioned_fnames, mentioned_idents,
                            chat_rel_fnames)
-        
+
         # Without seeds, recent commits tilt PageRank toward live code (a seed: stable hubs rarely change but
         # PageRank still finds them). areas.toml importance is applied to the result below instead, since
         # link mass swamped it as a seed.
@@ -842,7 +982,6 @@ class RepoMap:
         # Split each file's rank across its outgoing edges, so a definition ranks by how much it's
         # referenced rather than inheriting its file's rank (which let one popular file fill the map)
         # Unseeded: scale each file's rank and its definitions' by its areas.toml importance, renormalized
-        target_scale = None
         if importance_mul is not None:
             scaled = rank_array * importance_mul
             total = scaled.sum() or 1.0
@@ -854,29 +993,25 @@ class RepoMap:
         ranks = dict(zip(nodes, rank_array.tolist()))
 
         # Update excluded dictionary with status information
-        for fname in set(chat_fnames + other_fnames):
+        included_set = set(included)
+        for fname in all_fnames:
             if fname in excluded:
                 # Add status prefix to existing exclusion reason
                 excluded[fname] = f"[EXCLUDED] {excluded[fname]}"
-            elif fname not in included:
+            elif fname not in included_set:
                 excluded[fname] = "[NOT PROCESSED] File not included in final processing"
-        
-        # Create file report
+
         file_report = FileReport(
             excluded=excluded,
-            definition_matches=total_definitions,
-            reference_matches=total_references,
+            definition_matches=base.definition_matches,
+            reference_matches=base.reference_matches,
             total_files_considered=len(all_fnames),
             parse_errors=dict(self.parse_errors),
             git_history=git_history,
-            parseable_files=parseable_files,
+            parseable_files=base.parseable_files,
         )
-        
-        # A name also defined outside functions in the same file is no local helper
-        nested = {rel: {name for name, n in counts.items() if n == def_counts[(rel, name)]}
-                  for rel, counts in nested.items()}
-        return Ranking(graph, ranks, ident_ranks, included, definitions, file_report, mentioned_fnames,
-                       mentioned_idents, chat_rel_fnames, nested, dict(types))
+        return Ranking(graph, ranks, ident_ranks, included, base.definitions, file_report, mentioned_fnames,
+                       mentioned_idents, chat_rel_fnames, base.nested, base.types, base=base)
 
     def get_outline(self, other_fnames: List[str], max_tokens: int,
                     force_refresh: bool = False) -> Tuple[Optional[str], FileReport]:
@@ -903,8 +1038,13 @@ class RepoMap:
                           key=lambda rel: -ranking.file_ranks.get(rel, 0.0))[:5]
         focus |= {posixpath.dirname(rel) for rel in defining}
 
+        focused: Dict[str, bool] = {}   # per directory: a map has a few hundred directories and ~100k tags
+
         def in_focus(rel: str) -> bool:
-            return any(posixpath.dirname(rel) == a or (a and posixpath.dirname(rel).startswith(a + "/")) for a in focus)
+            directory = posixpath.dirname(rel)
+            if directory not in focused:
+                focused[directory] = any(directory == a or (a and directory.startswith(a + "/")) for a in focus)
+            return focused[directory]
 
         # Outside the focus only definitions something refers to qualify; focused directories show everything
         tags = [(rank, tag) for rank, tag in tags
