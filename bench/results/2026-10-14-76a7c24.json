@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "date": "2026-10-14",
+    "sha": "76a7c24",
+    "dirty": false,
+    "python": "3.14.7",
+    "cpu_count": 16,
+    "extractor_fingerprint": "26d23bf86a9071e74c2764f77fe7651c76eb3f5c9a83a5560cd3d77386f6161b",
+    "runs": 3,
+    "cold": true,
+    "targets": {
+      "this": {
+        "sha": "76a7c24",
+        "dirty": false,
+        "files": 87,
+        "parse_workers": -1,
+        "ranking_cache": true
+      }
+    }
+  },
+  "this": {
+    "time.unseeded_nocache": {
+      "median": 0.038,
+      "min": 0.035,
+      "runs": [
+        0.16,
+        0.038,
+        0.035
+      ]
+    },
+    "time.unseeded_hit": {
+      "median": 0.012,
+      "min": 0.012,
+      "runs": [
+        0.012,
+        0.012,
+        0.012
+      ],
+      "first": 0.04
+    },
+    "time.seeded_chat": {
+      "median": 0.105,
+      "min": 0.103,
+      "runs": [
+        0.119,
+        0.103,
+        0.105
+      ],
+      "first": 0.108
+    },
+    "time.seeded_dir": {
+      "median": 0.108,
+      "min": 0.107,
+      "runs": [
+        0.119,
+        0.107,
+        0.108
+      ],
+      "first": 0.108
+    },
+    "time.seeded_idents": {
+      "median": 0.106,
+      "min": 0.104,
+      "runs": [
+        0.106,
+        0.107,
+        0.104
+      ],
+      "first": 0.121
+    },
+    "time.search": {
+      "median": 0.084,
+      "min": 0.082,
+      "runs": [
+        0.084,
+        0.122,
+        0.082
+      ],
+      "first": 0.765
+    },
+    "time.cold_unseeded": {
+      "median": 0.981,
+      "min": 0.981,
+      "runs": [
+        0.981
+      ]
+    },
+    "size.unseeded@4096": {
+      "tokens": 831,
+      "lines": 30
+    },
+    "size.unseeded@20000": {
+      "tokens": 831,
+      "lines": 30
+    },
+    "size.seeded_chat@4096": {
+      "tokens": 3054,
+      "lines": 200
+    },
+    "size.seeded_chat@20000": {
+      "tokens": 3054,
+      "lines": 200
+    },
+    "size.seeded_dir@4096": {
+      "tokens": 3053,
+      "lines": 200
+    },
+    "size.seeded_dir@20000": {
+      "tokens": 3053,
+      "lines": 200
+    },
+    "size.seeded_idents@4096": {
+      "tokens": 3089,
+      "lines": 203
+    },
+    "size.seeded_idents@20000": {
+      "tokens": 3089,
+      "lines": 203
+    },
+    "size.search": {
+      "chars": 8275,
+      "more_hits": 0
+    }
+  }
+}

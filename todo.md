@@ -19,6 +19,8 @@ Highest value per effort first. S = under an hour or two, M = half a day, L = a 
    whether legacy code was edited by mistake (suggested by the `services` agent).
 
 ## Performance
+Track with `scripts/bench.py` (timing and output size, JSON in `bench/results/`, `--compare`); commit this repo's result
+files after perf or size changes.
 Built (see worklog): numpy edge arrays and own PageRank, persisted unseeded ranking and an MCP in-process memo,
 parallel parsing of tag-cache misses, a persisted base graph for seeded maps. `services` now: unseeded ~2.4s on a ranking-cache hit (~5.7s on a miss, first
 run each day), seeded ~2.0-2.4s on a base-graph hit, search ~2.4s, cold tags ~14s (was ~82s). Profile report with the numbers:
