@@ -31,7 +31,7 @@ def test_smoke_run_on_tmp_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(bench, "REPO_ROOT", repo)
     monkeypatch.setitem(bench.CASES, "this", {"chat": "a.py", "dir": "nodir", "idents": ["beta"], "search": "beta"})
     out = tmp_path / "out.json"
-    assert bench.main(["--runs", "1", "--out", str(out)]) == 0
+    assert bench.main(["--repo", "this", "--runs", "1", "--out", str(out)]) == 0
     data = json.loads(out.read_text())
     assert "time.seeded_chat" in data["this"] and "time.seeded_dir" not in data["this"]
     assert data["this"]["size.search"]["more_hits"] == 0

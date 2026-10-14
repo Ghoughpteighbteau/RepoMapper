@@ -1,0 +1,347 @@
+{
+  "meta": {
+    "date": "2026-10-14",
+    "sha": "7a1b5f7",
+    "dirty": false,
+    "python": "3.14.7",
+    "cpu_count": 16,
+    "extractor_fingerprint": "26d23bf86a9071e74c2764f77fe7651c76eb3f5c9a83a5560cd3d77386f6161b",
+    "runs": 3,
+    "cold": true,
+    "targets": {
+      "this": {
+        "sha": "7a1b5f7",
+        "dirty": false,
+        "files": 88,
+        "parse_workers": -1,
+        "ranking_cache": true
+      },
+      "services": {
+        "sha": "3c6fea2042",
+        "dirty": true,
+        "files": 7445,
+        "parse_workers": -1,
+        "ranking_cache": true
+      },
+      "django": {
+        "sha": "6f80050",
+        "dirty": false,
+        "files": 6537,
+        "parse_workers": -1,
+        "ranking_cache": true
+      }
+    }
+  },
+  "this": {
+    "time.unseeded_nocache": {
+      "median": 0.038,
+      "min": 0.034,
+      "runs": [
+        0.34,
+        0.038,
+        0.034
+      ]
+    },
+    "time.unseeded_hit": {
+      "median": 0.012,
+      "min": 0.012,
+      "runs": [
+        0.012,
+        0.012,
+        0.012
+      ],
+      "first": 0.038
+    },
+    "time.seeded_chat": {
+      "median": 0.103,
+      "min": 0.102,
+      "runs": [
+        0.104,
+        0.103,
+        0.102
+      ],
+      "first": 0.128
+    },
+    "time.seeded_dir": {
+      "median": 0.108,
+      "min": 0.107,
+      "runs": [
+        0.107,
+        0.108,
+        0.108
+      ],
+      "first": 0.129
+    },
+    "time.seeded_idents": {
+      "median": 0.104,
+      "min": 0.104,
+      "runs": [
+        0.105,
+        0.104,
+        0.104
+      ],
+      "first": 0.124
+    },
+    "time.search": {
+      "median": 0.082,
+      "min": 0.082,
+      "runs": [
+        0.137,
+        0.082,
+        0.082
+      ],
+      "first": 0.785
+    },
+    "time.cold_unseeded": {
+      "median": 0.867,
+      "min": 0.867,
+      "runs": [
+        0.867
+      ]
+    },
+    "size.unseeded@4096": {
+      "tokens": 831,
+      "lines": 30
+    },
+    "size.unseeded@20000": {
+      "tokens": 831,
+      "lines": 30
+    },
+    "size.seeded_chat@4096": {
+      "tokens": 3054,
+      "lines": 200
+    },
+    "size.seeded_chat@20000": {
+      "tokens": 3054,
+      "lines": 200
+    },
+    "size.seeded_dir@4096": {
+      "tokens": 3053,
+      "lines": 200
+    },
+    "size.seeded_dir@20000": {
+      "tokens": 3053,
+      "lines": 200
+    },
+    "size.seeded_idents@4096": {
+      "tokens": 3089,
+      "lines": 203
+    },
+    "size.seeded_idents@20000": {
+      "tokens": 3089,
+      "lines": 203
+    },
+    "size.search": {
+      "chars": 8275,
+      "more_hits": 0
+    }
+  },
+  "services": {
+    "time.unseeded_nocache": {
+      "median": 4.621,
+      "min": 4.617,
+      "runs": [
+        4.617,
+        4.621,
+        4.651
+      ]
+    },
+    "time.unseeded_hit": {
+      "median": 1.729,
+      "min": 1.703,
+      "runs": [
+        1.734,
+        1.703,
+        1.729
+      ],
+      "first": 1.693
+    },
+    "time.seeded_chat": {
+      "median": 1.944,
+      "min": 1.932,
+      "runs": [
+        1.957,
+        1.944,
+        1.932
+      ],
+      "first": 1.942
+    },
+    "time.seeded_dir": {
+      "median": 1.931,
+      "min": 1.855,
+      "runs": [
+        1.933,
+        1.855,
+        1.931
+      ],
+      "first": 1.809
+    },
+    "time.seeded_idents": {
+      "median": 2.623,
+      "min": 2.572,
+      "runs": [
+        2.623,
+        2.698,
+        2.572
+      ],
+      "first": 2.591
+    },
+    "time.search": {
+      "median": 2.683,
+      "min": 2.665,
+      "runs": [
+        2.665,
+        2.802,
+        2.683
+      ],
+      "first": 2.659
+    },
+    "time.cold_unseeded": {
+      "median": 13.236,
+      "min": 13.236,
+      "runs": [
+        13.236
+      ]
+    },
+    "size.unseeded@4096": {
+      "tokens": 3986,
+      "lines": 134
+    },
+    "size.unseeded@20000": {
+      "tokens": 19826,
+      "lines": 978
+    },
+    "size.seeded_chat@4096": {
+      "tokens": 3012,
+      "lines": 153
+    },
+    "size.seeded_chat@20000": {
+      "tokens": 4894,
+      "lines": 233
+    },
+    "size.seeded_dir@4096": {
+      "tokens": 2375,
+      "lines": 98
+    },
+    "size.seeded_dir@20000": {
+      "tokens": 4225,
+      "lines": 176
+    },
+    "size.seeded_idents@4096": {
+      "tokens": 3946,
+      "lines": 197
+    },
+    "size.seeded_idents@20000": {
+      "tokens": 17259,
+      "lines": 1086
+    },
+    "size.search": {
+      "chars": 10545,
+      "more_hits": 32815
+    }
+  },
+  "django": {
+    "time.unseeded_nocache": {
+      "median": 2.212,
+      "min": 2.198,
+      "runs": [
+        2.198,
+        2.212,
+        2.254
+      ]
+    },
+    "time.unseeded_hit": {
+      "median": 0.848,
+      "min": 0.786,
+      "runs": [
+        0.848,
+        0.786,
+        0.853
+      ],
+      "first": 0.787
+    },
+    "time.seeded_chat": {
+      "median": 1.464,
+      "min": 1.394,
+      "runs": [
+        1.464,
+        1.394,
+        1.465
+      ],
+      "first": 1.363
+    },
+    "time.seeded_dir": {
+      "median": 1.156,
+      "min": 1.117,
+      "runs": [
+        1.117,
+        1.156,
+        1.164
+      ],
+      "first": 1.158
+    },
+    "time.seeded_idents": {
+      "median": 1.639,
+      "min": 1.634,
+      "runs": [
+        1.639,
+        1.707,
+        1.634
+      ],
+      "first": 1.659
+    },
+    "time.search": {
+      "median": 1.441,
+      "min": 1.36,
+      "runs": [
+        1.441,
+        1.49,
+        1.36
+      ],
+      "first": 1.451
+    },
+    "time.cold_unseeded": {
+      "median": 6.794,
+      "min": 6.794,
+      "runs": [
+        6.794
+      ]
+    },
+    "size.unseeded@4096": {
+      "tokens": 3870,
+      "lines": 289
+    },
+    "size.unseeded@20000": {
+      "tokens": 9993,
+      "lines": 722
+    },
+    "size.seeded_chat@4096": {
+      "tokens": 4148,
+      "lines": 385
+    },
+    "size.seeded_chat@20000": {
+      "tokens": 9756,
+      "lines": 817
+    },
+    "size.seeded_dir@4096": {
+      "tokens": 1596,
+      "lines": 133
+    },
+    "size.seeded_dir@20000": {
+      "tokens": 4661,
+      "lines": 369
+    },
+    "size.seeded_idents@4096": {
+      "tokens": 4056,
+      "lines": 364
+    },
+    "size.seeded_idents@20000": {
+      "tokens": 9863,
+      "lines": 803
+    },
+    "size.search": {
+      "chars": 10413,
+      "more_hits": 2002
+    }
+  }
+}
