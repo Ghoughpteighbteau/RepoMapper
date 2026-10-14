@@ -373,6 +373,15 @@ repomap-mcp --root /path/to/project
    (like desktop apps) should pass `--root` in the server's `args`, one server per project.
 
 
+## Benchmarks
+
+`uv run python scripts/bench.py [--repo this|services|django|all] [--runs 3] [--cold]` times the map, seeded maps and
+search in process and records output size (tokens, lines) at 4096 and 20000 tokens. The seeds per repo are the `CASES`
+dict at the top of the script; `SERVICES_ROOT` and `DJANGO_ROOT` locate the other targets. Results go to
+`bench/results/<date>-<sha>[-dirty].json` (commit those for this repo); runs that include services or django are named
+`*.local.json` and gitignored. Compare two runs with `uv run python scripts/bench.py --compare OLD.json NEW.json`
+(regressions over 10% are flagged).
+
 ## Changelog
 
 7/13/2025 - Removed the project.json dependency. Fixed the MCP server to be a little easier for the LLM to work with in terms of filenames.

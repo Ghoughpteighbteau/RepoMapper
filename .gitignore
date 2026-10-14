@@ -6,3 +6,4 @@ build/
 todo.md
 todo.worklog.md
 todo.worklog.*.md
+bench/results/*.local.json
