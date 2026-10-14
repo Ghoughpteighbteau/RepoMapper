@@ -140,7 +140,7 @@ CONFIG_TEMPLATE = """\
 # active_commits = 10          # the outline opens active directories first: this many commits in 90 days is fully active...
 # idle_activity = 0.25         # ...and a directory with none scores this much (1 turns the activity tilt off; it also orders subdirectories)
 # shared_name_edge_weight = 0.0 # Dependencies: multiplier for edges between two JS/TS files that come only from shared names (0 drops them; imports give the real ones)
-# doc_globs = ["README.md", "CLAUDE.md", "*.README.md"]  # doc files listed after each directory in the outline (file-name globs, case-insensitive)
+# doc_globs = ["README*", "CLAUDE.md", "*.README.md"]  # doc files listed after each directory in the outline (file-name globs, case-insensitive)
 # Builtin and everyday method names (push, set, id, log) are never sample names:
 # generic_names = ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"]
 
