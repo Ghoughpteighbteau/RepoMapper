@@ -4,7 +4,7 @@
 Highest value per effort first. S = under an hour or two, M = half a day, L = a day or more.
 1. Outline leftovers from `services` feedback (S-M each): idle code expanded inside core areas, shared-types depth,
    sample noise (see "Outline leftovers").
-2. Performance, what is left (S-M each; see "Performance"): seeded maps and search are still slow.
+2. Performance, what is left (S-M each; see "Performance"): search is still ~2.4s per call.
 3. Workspace packages with a non-`src` main (`@marathon/core-steps`) (S): `main`/`types`/`module` entries and
    build dirs mapped to `src/` are handled; check on `services` whether seeded `lib/steps/core` now shows
    "used by api/red" lines, and fix the entry resolution if not.
@@ -20,12 +20,11 @@ Highest value per effort first. S = under an hour or two, M = half a day, L = a 
 
 ## Performance
 Built (see worklog): numpy edge arrays and own PageRank, persisted unseeded ranking and an MCP in-process memo,
-parallel parsing of tag-cache misses. `services` now: unseeded ~2.4s on a ranking-cache hit (~5.7s on a miss, first
-run each day), seeded ~6.5s, search ~2.4s, cold tags ~14s (was ~82s). Profile report with the numbers:
+parallel parsing of tag-cache misses, a persisted base graph for seeded maps. `services` now: unseeded ~2.4s on a ranking-cache hit (~5.7s on a miss, first
+run each day), seeded ~2.0-2.4s on a base-graph hit, search ~2.4s, cold tags ~14s (was ~82s). Profile report with the numbers:
 see the 2026-10-14 entry in the worklog. Still open, biggest first:
-- Seeded maps (~6.5s on `services`) recompute everything per seed set: cache the base graph arrays and tag bucketing
-  (graph index: per file ref-name counts, defs, imports; ~8MB, 0.08s load) and redo only personalization,
-  PageRank and ident ranks. Also pass the tags `build_ranking` read into `ranked_tags_of` (second `get_tags` pass, ~0.9s).
+- A seeded or unseeded hit on `services` still spends ~1.1s in `render_outline` (`aggregate`, ~500k `areas.resolve` calls),
+  ~0.5s in `find_src_files`, ~0.3s in `outline_inputs`.
 - Output memo for the unseeded map keyed on the ranking key plus token limit (1.1s render left on a ranking hit).
 - `outline_inputs` still builds ~1.1M pair dicts for `render_outline`; pass arrays through.
 - `search_identifiers` ~2.4s per call: ~1.1s unpickling tags (compact or columnar tag store, name-table index),
@@ -35,8 +34,10 @@ see the 2026-10-14 entry in the worklog. Still open, biggest first:
   query invalidating every file.
 - Small: memoize `areas.resolve` (463k calls) and path normalization (~0.6s).
 - Not pursued: disabling or freezing the garbage collector (~1.5s), the user is wary of it.
-- Known gaps in the ranking cache: the key has no shallow-to-full clone state; ranks on a hit can be up to a day old
-  (key includes the date); `ranked_tags_of` parses serially if the tags cache is cold but the ranking cache hits.
+- Known gaps in the caches: the ranking key has no shallow-to-full clone state; unseeded ranks on a hit can be up to a day
+  old (key includes the date); `ranked_tags_of` parses serially if the tags cache is cold but `ranking.v1` hits; tie order
+  can differ between a fresh build and a cached one (set order); a seeded call whose chat file is outside the listed
+  files keys on the union, so alternating such calls thrashes the graph cache.
 
 ## Output size and token efficiency
 - Built: terse file/dir lines, language and test counts only on truncated dirs, 1% PageRank cutoff, merged
