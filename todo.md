@@ -2,15 +2,14 @@
 
 ## Priorities (value / effort estimate)
 Highest value per effort first. S = under an hour or two, M = half a day, L = a day or more.
-1. Search token cuts (S, in progress): group hits by file, strip repeated paths from context lines, add an
-   `N more hits` count when `max_results` truncated (the `services` agent can't trust search for "every usage"
-   without it).
-2. Outline leftovers from `services` feedback (S-M each): idle code expanded inside core areas, shared-types depth,
+1. Outline leftovers from `services` feedback (S-M each): idle code expanded inside core areas, shared-types depth,
    sample noise (see "Outline leftovers").
-3. Improve the performance of repomap on general queries (M, maybe L; see "Performance").
-4. Workspace packages with a non-`src` main (`@marathon/core-steps`) (S): `main`/`types`/`module` entries and
+2. Performance, what is left (S-M each; see "Performance"): seeded maps and search are still slow.
+3. Workspace packages with a non-`src` main (`@marathon/core-steps`) (S): `main`/`types`/`module` entries and
    build dirs mapped to `src/` are handled; check on `services` whether seeded `lib/steps/core` now shows
    "used by api/red" lines, and fix the entry resolution if not.
+4. Starter `areas.toml`: write only the globs the repository needs, and allow a list of globs per entry (S-M; see
+   "`.repomap/` leftovers").
 5. Seeded trunk cost on deep paths (M): the 20% share is a floor, not a cap (see "Zoom step 2: leftovers").
 6. Terser stat syntax (`125c 6d`, `2131f`) and header text moved into the tool description (M): user skipped it in
    the last round; revisit if the outline still needs to shrink. Changes the format agents and tests rely on.
@@ -19,11 +18,25 @@ Highest value per effort first. S = under an hour or two, M = half a day, L = a 
 9. Measure the map on real tasks (M): 5-10 past tasks with/without it; files opened before the right one, tokens,
    whether legacy code was edited by mistake (suggested by the `services` agent).
 
-## Performance (priority 3)
-Improve the performance of repomap on general queries. Known from the worklog: ~11-13s on `services`, ~6s warm on
-django; graph build and ranking dominate; the outline builds the tree twice (merged and unmerged); the first run
-after a cache fingerprint change is cold at 50-90s. Details and targets will come from the profile another agent
-is running; fill in here when it reports.
+## Performance
+Built (see worklog): numpy edge arrays and own PageRank, persisted unseeded ranking and an MCP in-process memo,
+parallel parsing of tag-cache misses. `services` now: unseeded ~2.4s on a ranking-cache hit (~5.7s on a miss, first
+run each day), seeded ~6.5s, search ~2.4s, cold tags ~14s (was ~82s). Profile report with the numbers:
+see the 2026-10-14 entry in the worklog. Still open, biggest first:
+- Seeded maps (~6.5s on `services`) recompute everything per seed set: cache the base graph arrays and tag bucketing
+  (graph index: per file ref-name counts, defs, imports; ~8MB, 0.08s load) and redo only personalization,
+  PageRank and ident ranks. Also pass the tags `build_ranking` read into `ranked_tags_of` (second `get_tags` pass, ~0.9s).
+- Output memo for the unseeded map keyed on the ranking key plus token limit (1.1s render left on a ranking hit).
+- `outline_inputs` still builds ~1.1M pair dicts for `render_outline`; pass arrays through.
+- `search_identifiers` ~2.4s per call: ~1.1s unpickling tags (compact or columnar tag store, name-table index),
+  ~0.4s `Path.relative_to` per file, ~0.4s `find_src_files`; memoize across calls in the MCP server.
+- Cold per-file cost: pygments `guess_lexer_for_filename` and the `line_starts` loop, compiled query reuse outside the
+  pool (edits fingerprinted functions, so everyone goes cold once). A per-language fingerprint would stop edits to one
+  query invalidating every file.
+- Small: memoize `areas.resolve` (463k calls) and path normalization (~0.6s).
+- Not pursued: disabling or freezing the garbage collector (~1.5s), the user is wary of it.
+- Known gaps in the ranking cache: the key has no shallow-to-full clone state; ranks on a hit can be up to a day old
+  (key includes the date); `ranked_tags_of` parses serially if the tags cache is cold but the ranking cache hits.
 
 ## Output size and token efficiency
 - Built: terse file/dir lines, language and test counts only on truncated dirs, 1% PageRank cutoff, merged
@@ -60,6 +73,9 @@ reference edges weigh 50 vs 10 per import): consider a rank boost for imported f
 - README/CLAUDE.md first sentence as a live default `note` (only written into the starter file today).
 - `*.properties` config glob and the `*_spec.*` globs are starter defaults, but existing `areas.toml` files (the
   user's `services` one) don't have them; `moved_tests_hint` only covers the old `[tests]` section.
+- Starter `areas.toml` globs: only write a glob entry when the repository has a matching file (today every default
+  test/config glob is written regardless). Also consider letting one `[globs]` entry take a list of globs
+  (`["*_test.*", "*_spec.*", ...]`): the starter file repeats the same keys for each spec/test pattern.
 
 ## Outline leftovers (from `services` dogfooding)
 Built since the first round: priority-queue allocator, test/config demotion, sample scoring, non-code dirs, edge
@@ -78,7 +94,6 @@ stopgaps and import edges, doc_globs, merged chains (see worklog). Still open:
 - `services` areas.toml (user's repo, untracked): `static/` deprecated (per CLAUDE.md), notes for `helm/`
   (prototype), `source/red`, a flyway note, plus the spec/properties globs above.
 - `core_importance` (4) against sqrt(files) in the allocator is untuned.
-- Performance: see "Performance".
 - Dropped by the user: naming hidden dirs (`+N more dirs`), relabelling counts as parsed files.
 
 ## Git history signals: leftovers
