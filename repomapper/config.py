@@ -85,6 +85,8 @@ class OutlineConfig:
     # Multiplier for shared-name edges between two JS/TS files in the Dependencies section; imports give those edges, so
     # names alone (`Account`, `get`) link unrelated apps. 0 drops them, 1 keeps them as before.
     shared_name_edge_weight: float = 0.0
+    # Doc files listed in brackets after a directory in the outline: globs on file names, case-insensitive
+    doc_globs: List[str] = field(default_factory=lambda: ["README.md", "CLAUDE.md", "*.README.md"])
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
     generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"])
 

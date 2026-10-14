@@ -230,3 +230,48 @@ def test_starter_test_globs_cover_spec_files():
     for path in ("lightship-auth_spec.js", "src/app.e2e-spec.ts", "src/app.spec.ts"):
         assert areas.resolve(path).kind == "test", path
     assert '[globs."*_spec.*"]' in TEST_GLOB_ENTRIES and '[globs."*-spec.*"]' in TEST_GLOB_ENTRIES
+
+
+def test_readme_sentence_prefers_nothing_over_guidance_and_boilerplate(tmp_path):
+    misleading = [
+        "Guidance for working on the browser render service.",
+        "Names in this codebase that don't mean what they look like.",
+        "This file provides guidance to Claude Code when working with code in this repository.",
+        "This README describes how the docs are organised.",
+        "Always run the tests before committing.",
+        "Please read the contributing guide first.",
+        "Welcome to the project!",
+        "This project was bootstrapped with Create React App.",
+        "Email Service - Sends transactional mail.",
+        "Instructions for building the overlay.",
+    ]
+    for sentence in misleading:
+        (tmp_path / "README.md").write_text(f"# Title\n\n{sentence}\n")
+        assert readme_sentence(str(tmp_path)) is None, sentence
+        (tmp_path / "README.md").unlink()
+        (tmp_path / "CLAUDE.md").write_text(f"# Title\n\n{sentence}\n")
+        assert readme_sentence(str(tmp_path)) is None, sentence
+        (tmp_path / "CLAUDE.md").unlink()
+
+
+def test_readme_sentence_prefers_readme_over_claude_md(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("Handles the browser rendering of reports.\n")
+    (tmp_path / "README.md").write_text("Renders report pages to PDF.\n")
+    assert readme_sentence(str(tmp_path)) == "Renders report pages to PDF."
+
+    (tmp_path / "README.md").write_text("Guidance for working on the browser render service.\n")
+    assert readme_sentence(str(tmp_path)) == "Handles the browser rendering of reports."
+
+
+def test_template_marks_properties_files_as_config():
+    areas = load_areas_from_template()
+    assert areas.resolve("cas/etc/cas.properties").kind == "config"
+    assert areas.resolve("gradle.properties").kind == "config"
+    assert areas.resolve("src/app.ts").kind is None
+
+
+def load_areas_from_template():
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as d:
+        write_areas(pathlib.Path(d), AREAS_TEMPLATE)
+        return load_areas(d)

@@ -184,15 +184,30 @@ def _git(root: str, *args: str) -> Optional[str]:
     return result.stdout.strip()
 
 
+# Sentences that address readers or agents, describe the docs themselves, or are template boilerplate: a
+# starter note should say what the code is, so suggesting nothing beats these.
+NOT_A_DESCRIPTION = re.compile(
+    r"(?:guidance|guidelines|instructions|notes|names|conventions|rules|tips|steps)\s+(?:for|on|in|about|to)\b"
+    r"|(?:this|the)\s+(?:file|document|doc|readme|guide|page|folder|directory)\b"
+    r"|(?:this|the)\s+(?:repo|repository|project)\s+(?:was|is)\s+(?:bootstrapped|generated|created|a\s+template)"
+    r"|(?:always|never|please|do\s+not|don't|make\s+sure|ensure|remember|note|see|read|use|run|install|follow|when|if|before|after|to)\b"
+    r"|welcome\b|getting\s+started\b|table\s+of\s+contents\b|todo\b"
+    r"|[\w\s]{1,40}\s[-–—:]\s",   # a title with a tagline: "Email Service - ..."
+    re.I)
+
+
 def readme_sentence(directory: str) -> Optional[str]:
     """First sentence of the opening prose in the directory's README or CLAUDE.md, or None if it has none.
 
     Headings (# or underlined), badges, html, lists, code and tables are skipped, as are title-ish lines and
     fragments (fewer than three words, or not ending in . ! ?: "Email Service -", "Type: `x`"). Prose under a
     heading that follows other content belongs to a section, not the intro, so the search stops at that
-    heading ("## Glossary" / "Names in this codebase that...")."""
+    heading ("## Glossary" / "Names in this codebase that..."). Sentences that give guidance or instructions,
+    describe the docs, or are boilerplate (NOT_A_DESCRIPTION) are skipped. READMEs are read before CLAUDE.md,
+    which is mostly written for agents."""
     try:
-        names = sorted(n for n in os.listdir(directory) if n.upper().startswith("README") or n == "CLAUDE.md")
+        names = sorted((n for n in os.listdir(directory) if n.upper().startswith("README") or n == "CLAUDE.md"),
+                       key=lambda n: (n == "CLAUDE.md", n))
     except OSError:
         return None
     for name in names:
@@ -218,7 +233,7 @@ def readme_sentence(directory: str) -> Optional[str]:
             if para[0] in "-*|>`=" or para[0].isdigit():   # lists, code fences and tables
                 continue
             sentence = re.split(r"(?<=[.!?])\s", para, maxsplit=1)[0]
-            if len(sentence.split()) < 3 or not re.search(r"[.!?]$", sentence):
+            if len(sentence.split()) < 3 or not re.search(r"[.!?]$", sentence) or NOT_A_DESCRIPTION.match(sentence):
                 continue
             return sentence if len(sentence) <= MAX_NOTE_LENGTH else sentence[:MAX_NOTE_LENGTH - 3] + "..."
     return None

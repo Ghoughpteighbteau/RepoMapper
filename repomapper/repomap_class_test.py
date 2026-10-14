@@ -482,3 +482,14 @@ def test_outline_shows_import_direction_and_drops_shared_name_edges_between_js_f
 
     assert "ui/src/page.ts -> lib/src/model.ts" in deps
     assert "<->" not in deps and "api/src" not in deps
+
+
+def test_outline_lists_docs_matching_doc_globs(tmp_path):
+    files = make_project(tmp_path, {**PROJECT, "README.md": "# x\n", "mail.README.md": "# m\n", "NOTES.txt": "n\n"})
+    out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
+    assert "[README.md, mail.README.md]" in out
+
+    repomap = make_repomap(tmp_path)
+    repomap.config.outline.doc_globs = ["NOTES.*"]
+    out, _ = repomap.get_outline(files, 10_000)
+    assert "[NOTES.txt]" in out and "README" not in out

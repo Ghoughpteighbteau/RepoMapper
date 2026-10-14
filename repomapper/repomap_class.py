@@ -27,7 +27,7 @@ from repomapper.utils import count_tokens, read_text, is_parseable, Tag
 from repomapper.repomap_dir import CACHE_DIR
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
-from repomapper.outline import OutlineFile, render_outline
+from repomapper.outline import OutlineFile, find_docs, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
 from repomapper.imports import IMPORT_RE, ImportResolver, extract_imports, load_packages
@@ -710,7 +710,7 @@ class RepoMap:
                 names = os.listdir(self.root / rel_dir)
             except OSError:
                 return []
-            return sorted(n for n in names if n.upper().startswith("README") or n == "CLAUDE.md")
+            return find_docs(names, self.config.outline.doc_globs)
 
         history = self.history()
         activity = history.describe if history else (lambda path: None)

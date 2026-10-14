@@ -14,7 +14,8 @@ of many files (`lib/repositories/src`) lists its top files. A directory that doe
 can (at least MIN_LEAN_DIRS subdirectories folded, no file lines, `+N more dirs`). Subdirectories are ordered
 by sqrt(files) x (PageRank relative to the biggest sibling + activity), so shared code everyone references
 doesn't outrank where the work happens.
-Single-child chains (a directory with no files and one subdirectory) are one line: `java/com/acme/email/`. Share of PageRank is shown on each line. Edges between the
+Single-child chains (a directory with no files and one subdirectory) are one line: `java/com/acme/email/`
+(its areas.toml status, replacement and note are the deepest directory's that sets each). Doc files (`outline.doc_globs`) are listed in brackets. Share of PageRank is shown on each line. Edges between the
 displayed nodes show which areas depend on which: `a <-> b` when both ways, and labels relative to the
 deepest common directory (`lib/types/: task.ts -> user.ts`). A directory's edges to its own listed files
 are left out.
@@ -45,6 +46,7 @@ Lines below MIN_SHOWN_RANK of the PageRank show no percentage. Git activity show
 on file lines only for hot files (HOT_FILE_COMMITS in the last 90 days).
 """
 
+import fnmatch
 import heapq
 import math
 import os
@@ -53,7 +55,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from repomapper.areas import Areas, annotation
+from repomapper.areas import Area, Areas, annotation
 from repomapper.config import IdentifierWeightConfig, OutlineConfig, identifier_weight
 from repomapper.utils import mostly_single_letters
 
@@ -225,6 +227,12 @@ def sample_defs(files: Dict[str, OutlineFile], kinds: Dict[str, str], settings: 
     return out
 
 
+def find_docs(names: List[str], globs: List[str]) -> List[str]:
+    """File names matching any of the doc globs (outline.doc_globs), case-insensitively, sorted."""
+    patterns = [g.lower() for g in globs]
+    return sorted(n for n in names if any(fnmatch.fnmatchcase(n.lower(), g) for g in patterns))
+
+
 def pct(rank: float) -> str:
     """' 12.3%' for a line's share of PageRank; '' below MIN_SHOWN_RANK."""
     return f" {rank * 100:.1f}%" if rank >= MIN_SHOWN_RANK else ""
@@ -262,7 +270,14 @@ def render_outline(
             start = len(d.path) - len(d.name)
             doc_cache[d.path] = [f"{p[start:]}/{doc}" for p in d.chain for doc in docs(p)] + docs(d.path)
         docs_note = f"  [{', '.join(doc_cache[d.path])}]" if doc_cache[d.path] else ""
-        return docs_note + "".join(annotation(areas.entries.get(p)) for p in d.chain + [d.path])
+        # Nearest entry wins per key, as in areas.py: the deepest directory's status, replacement and note
+        merged = Area()
+        for p in reversed(d.chain + [d.path]):
+            entry = areas.entries.get(p)
+            for key in ("status", "replaced_by", "note"):
+                if entry and getattr(merged, key) is None:
+                    setattr(merged, key, getattr(entry, key))
+        return docs_note + annotation(merged)
 
     def summary(d: Dir) -> str:
         langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))

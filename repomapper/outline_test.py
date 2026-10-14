@@ -1,6 +1,6 @@
 from repomapper.areas import Area, Areas
 from repomapper.config import IdentifierWeightConfig, OutlineConfig
-from repomapper.outline import HEADER, MAX_PLAIN_DIRS, OutlineFile, render_outline
+from repomapper.outline import HEADER, MAX_PLAIN_DIRS, OutlineFile, find_docs, render_outline
 from repomapper.utils import count_tokens
 
 
@@ -531,3 +531,28 @@ def test_imports_both_ways_stay_a_double_arrow_and_imports_alone_make_a_line():
     assert "ui/app.ts <-> lib/types/user.ts" in render_outline(FILES, {}, 10_000, tokens, import_edges=both)
     one_way = {("ui/app.ts", "lib/types/user.ts"): 1.0}
     assert "ui/app.ts -> lib/types/user.ts" in render_outline(FILES, {}, 10_000, tokens, import_edges=one_way)
+
+
+def test_collapsed_chain_shows_only_the_deepest_annotation_per_key():
+    files = {"static/ls-p2x/src/a.py": OutlineFile(0.5, [(0.5, "a")]), "static/ls-p2x/src/b.py": OutlineFile(0.5, [(0.5, "b")])}
+    areas = Areas({"static": Area(status="deprecated", note="old static assets"),
+                   "static/ls-p2x": Area(status="legacy", replaced_by="source/p3x", note="p2x bundle")})
+    out = render_outline(files, {}, 10_000, tokens, areas=areas)
+    assert "[legacy, replaced by source/p3x] — p2x bundle" in out
+    assert "deprecated" not in out and "old static assets" not in out
+
+
+def test_collapsed_chain_keeps_upper_keys_the_deeper_entry_leaves_unset():
+    files = {"static/ls-p2x/src/a.py": OutlineFile(1.0, [(1.0, "a")])}
+    areas = Areas({"static": Area(status="deprecated", note="old static assets"),
+                   "static/ls-p2x": Area(note="p2x bundle")})
+    out = render_outline(files, {}, 10_000, tokens, areas=areas)
+    assert "[deprecated] — p2x bundle" in out
+    assert "old static assets" not in out
+
+
+def test_doc_globs_pick_doc_files_by_name():
+    names = ["README.md", "CLAUDE.md", "api.README.md", "readme.md", "notes.txt", "README.rst", "src"]
+    assert find_docs(names, ["README.md", "CLAUDE.md", "*.README.md"]) == ["CLAUDE.md", "README.md", "api.README.md", "readme.md"]
+    assert find_docs(names, ["*.rst"]) == ["README.rst"]
+    assert find_docs(names, []) == []
