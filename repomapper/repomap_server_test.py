@@ -12,6 +12,7 @@ def isolated_project(tmp_path, monkeypatch):
     monkeypatch.setattr(repomap_class, "TAGS_CACHE_DIR", str(tmp_path / ".cache"))
     monkeypatch.setattr(repomap_server, "PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(repomap_server, "CREATED_FILES", [])
+    monkeypatch.setattr(repomap_server, "HINT_SENT", False)
 
 
 def search_raw(**kwargs):
@@ -63,11 +64,63 @@ def test_startup_init_is_reported_in_first_response_only(tmp_path):
 
     repomap_server.init_project(str(tmp_path))
     first = search(query="interleave")["hint"]
-    second = search(query="interleave")["hint"]
+    second = search(query="interleave").get("hint", "")
 
     assert (tmp_path / ".repomap" / "ignore").exists()
     assert "Created .repomap/ignore" in first
     assert "Created" not in second
+
+
+def map_raw(**kwargs):
+    fn = getattr(repomap_server.repo_map, "fn", repomap_server.repo_map)
+    return asyncio.run(fn(**kwargs))
+
+
+@pytest.mark.parametrize("call", [lambda: search_raw(query="interleave"), lambda: map_raw()])
+def test_ignore_hint_comes_once_per_server_process_unless_results_look_generated(tmp_path, call):
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n")
+
+    assert ".repomap/ignore" in call()["hint"]
+    assert "hint" not in call()
+    assert "hint" not in call()
+
+
+def test_search_repeats_the_hint_when_hits_are_in_generated_looking_files(tmp_path):
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "app.min.js").write_text("function interleave() {}\n")
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n")
+    (tmp_path / "b.ts").write_text("export function other() {}\n")
+    search_raw(query="other")                               # the first call spends the once-per-process hint
+
+    assert "hint" not in search_raw(query="other")
+    assert ".repomap/ignore" in search_raw(query="interleave")["hint"]
+
+
+def test_repo_map_repeats_the_hint_when_the_map_lists_generated_looking_files(tmp_path):
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "lib.bundle.js").write_text("function interleave() {}\n")
+    (tmp_path / "a.ts").write_text("export function other() {}\n")
+    map_raw(chat_files=["a.ts"], other_files=["a.ts"])
+    assert "hint" not in map_raw(chat_files=["a.ts"], other_files=["a.ts"])
+
+    response = map_raw(chat_files=["vendor/lib.bundle.js"], other_files=["a.ts", "vendor/lib.bundle.js"])
+
+    assert ".repomap/ignore" in response["hint"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("src/app.ts", False),
+    ("static/app.min.js", True),
+    ("static/vendor.bundle.js", True),
+    ("web/dist/main.js", True),
+    ("third_party/x.ts", True),
+    ("src/api.generated.ts", True),
+    ("proto/user_pb2.py", True),
+    ("src/distance/near.ts", False),
+    ("src/vendored_names.ts", False),
+])
+def test_looks_generated_by_path_alone(text, expected):
+    assert repomap_server.looks_generated(text) is expected
 
 
 def test_resolve_project_root_prefers_explicit_root(tmp_path):

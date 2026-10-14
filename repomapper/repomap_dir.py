@@ -145,6 +145,9 @@ CONFIG_TEMPLATE = """\
 # idle_activity = 0.25         # ...and a directory with none scores this much (1 turns the activity tilt off; it also orders subdirectories)
 # shared_name_edge_weight = 0.0 # Dependencies: multiplier for edges between two JS/TS files that come only from shared names (0 drops them; imports give the real ones)
 # seeded_trunk_share = 0.2     # seeded maps: share of the token budget for the trunk (path to the focused files, folded siblings, Dependencies); the rest is signatures
+# seeded_defs_per_file = 12    # seeded maps: definitions listed per file, most referenced first; the rest show as "+N more defs" (0 = all)
+# seeded_test_names = 3        # seeded maps: a test file (kind = "test" in areas.toml) is one line, "a_test.py: 12 tests (3 names, +9 more)"; 0 = the count only
+# seeded_max_line_length = 120 # seeded maps: signature lines longer than this are cut with "..." (0 = whole)
 # other_files_rank_share = 0.7 # seeded maps: "Other ranked files" stop at the first file ranked below this share of the best one's (0 = fill the budget)
 # merge_dir_share = 0.95      # a directory whose biggest subdirectory holds this share of its files merges with it into one line (above 1: only empty pass-through directories); files outside show as "(+N files outside)"
 # doc_globs = ["README*", "CLAUDE.md", "*.README.md"]  # doc files listed after each directory in the outline (file-name globs, case-insensitive)

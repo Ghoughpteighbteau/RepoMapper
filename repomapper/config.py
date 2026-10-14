@@ -92,6 +92,14 @@ class OutlineConfig:
     # Seeded maps (chat_files, mentioned_files, mentioned_idents): share of the token budget for the trunk (the path from the
     # root to the focused files, folded siblings, Dependencies); the rest goes to signatures
     seeded_trunk_share: float = 0.2
+    # Seeded maps: definitions listed per file, best ranked (most referenced) first; the rest show as "+N more defs".
+    # 0 lists every definition.
+    seeded_defs_per_file: int = 12
+    # Seeded maps: test files (areas.toml kind = "test") collapse to one line, `a_test.py: 12 tests (names, +9 more)`,
+    # with this many names. 0 shows the count only.
+    seeded_test_names: int = 3
+    # Seeded maps: signature lines longer than this are cut with "..." (long parameter lists, overloads). 0 keeps them whole.
+    seeded_max_line_length: int = 120
     # Seeded maps: "Other ranked files" (outside the focused directories) stop at the first file whose rank falls below this
     # share of the best one's; what follows is mostly generic names. 0 keeps everything that fits the budget.
     other_files_rank_share: float = 0.7

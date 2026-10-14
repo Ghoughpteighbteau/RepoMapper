@@ -317,3 +317,11 @@ def stale_entries(root: str, areas: Areas, settings: GitConfig = GitConfig(),
                          "check it's still accurate")
     return stale
 
+
+
+def test_file_checker(areas: Areas):
+    """Predicate for test files: areas.toml kind = "test" when it sets any, else the starter test globs."""
+    if any(a.kind == "test" for a in [*areas.entries.values(), *areas.globs.values()]):
+        return lambda rel: areas.resolve(rel).kind == "test"
+    regexes = [glob_regex(g) for g in TEST_GLOBS]
+    return lambda rel: any(r.match(rel) for r in regexes)

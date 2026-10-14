@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set
@@ -12,7 +13,7 @@ from repomapper.repomap_class import RepoMap
 from repomapper.utils import count_tokens, read_text, find_src_files, find_git_root
 from repomapper.repomap_dir import init_repomap_dir
 from repomapper.config import load_config
-from repomapper.areas import TEST_GLOBS, Areas, glob_regex, load_areas, moved_tests_hint, stale_entries
+from repomapper.areas import load_areas, moved_tests_hint, stale_entries, test_file_checker
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -56,16 +57,38 @@ def init_project(root: str) -> None:
     CREATED_FILES = init_repomap_dir(root)
 
 
-def ignore_hint() -> str:
-    global CREATED_FILES
-    if not CREATED_FILES:
-        return IGNORE_HINT
-    created, CREATED_FILES = CREATED_FILES, []
-    return (
-        f"Created {', '.join(created)} in the project root. .repomap/ignore lists default patterns and files "
-        "detected as generated; areas.toml and config.toml are commented templates. Tell the user so they can "
-        f"review them, remove false positives and commit .repomap/. {IGNORE_HINT}"
-    )
+# Whether a response already carried the generic IGNORE_HINT in this server process
+HINT_SENT = False
+
+# Paths that suggest vendored, minified, bundled or generated code
+GENERATED_PATH = re.compile(
+    r"\.min\.(?:js|css)\b|[.-]bundle\.|[.-]chunk\.|\.generated\.|_pb2\b|\.pb\.(?:go|ts|js)\b"
+    r"|(?:^|[/\s])(?:dist|vendor|vendors|third_party|__generated__|generated)/"
+)
+
+
+def looks_generated(text: str) -> bool:
+    """Whether paths in text (a map or a list of result files) look vendored, minified, bundled or generated."""
+    return bool(GENERATED_PATH.search(text))
+
+
+def ignore_hint(listing: str) -> Optional[str]:
+    """The ignore-file hint for a response whose files (or map) are in listing, or None. The generic hint goes out with
+    the first response of the server process and again whenever the listing looks generated (looks_generated); files
+    created at startup are reported, with the hint, in the first response."""
+    global CREATED_FILES, HINT_SENT
+    if CREATED_FILES:
+        created, CREATED_FILES = CREATED_FILES, []
+        HINT_SENT = True
+        return (
+            f"Created {', '.join(created)} in the project root. .repomap/ignore lists default patterns and files "
+            "detected as generated; areas.toml and config.toml are commented templates. Tell the user so they can "
+            f"review them, remove false positives and commit .repomap/. {IGNORE_HINT}"
+        )
+    if HINT_SENT and not looks_generated(listing):
+        return None
+    HINT_SENT = True
+    return IGNORE_HINT
 
 
 MAX_ERROR_EXAMPLES = 5
@@ -119,6 +142,9 @@ async def repo_map(
 
     Files matching .gitignore or .repomap/ignore (gitignore syntax, relative to the project root) are skipped. If the
     map is dominated by vendored, minified, bundled or generated files, suggest adding them to .repomap/ignore.
+    The response's 'hint' repeats this advice only on the first call of the server process, when it reports files
+    created in .repomap/, or when the map shows paths that look generated (*.min.js, *.bundle.js, dist/, vendor/);
+    without a 'hint', the advice above still holds.
 
     :param chat_files: A list of file paths that are currently in the chat context. These files will receive the highest ranking.
     :param other_files: A list of other relevant file paths in the repository to consider for the map. They receive a lower ranking boost than mentioned_files and chat_files.
@@ -139,13 +165,13 @@ async def repo_map(
             - 'total_files_considered': all files given, including docs, configs and lock files
             - 'git_history' (unseeded maps): commits the activity signals used, or why there were none
             - 'parse_errors' (only if any): count of files that failed to parse and a few example errors
+        - 'hint' (only when it applies, see above): suggestion to add generated files to .repomap/ignore
         - 'config_warnings' (only if any): problems in .repomap/config.toml or areas.toml; tell the user
         Or an 'error' key if an error occurred.
     """
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
-    hint = ignore_hint()
     config, areas = load_config(project_root), load_areas(project_root)
     warnings = (config.warnings + moved_tests_hint(config, areas) + areas.warnings
                 + stale_entries(project_root, areas, config.git))
@@ -234,8 +260,10 @@ async def repo_map(
         response = {
             "map": map_content or "No repository map could be generated.",
             "report": report_dict,
-            "hint": hint,
         }
+        hint = ignore_hint(map_content or "")
+        if hint:
+            response["hint"] = hint
         if warnings:
             response["config_warnings"] = warnings
         return response
@@ -249,14 +277,6 @@ def truncate_lines(text: str, max_length: int) -> str:
         line if len(line) <= max_length else line[:max_length - 3] + "..."
         for line in text.splitlines()
     )
-
-
-def test_file_checker(areas: Areas):
-    """Predicate for test files: areas.toml kind = "test" when it sets any, else the starter test globs."""
-    if any(a.kind == "test" for a in [*areas.entries.values(), *areas.globs.values()]):
-        return lambda rel: areas.resolve(rel).kind == "test"
-    regexes = [glob_regex(g) for g in TEST_GLOBS]
-    return lambda rel: any(r.match(rel) for r in regexes)
 
 
 @mcp.tool()
@@ -277,7 +297,9 @@ async def search_identifiers(
        (raise `max_results` to see them; without it the result is complete).
        When searching, just use the identifier name without any special characters, prefixes or suffixes. The search is 
        case-insensitive. Files matching .gitignore or .repomap/ignore are skipped; if hits come from vendored,
-       minified or generated files, suggest adding them to .repomap/ignore.
+       minified or generated files, suggest adding them to .repomap/ignore. A 'hint' key says so on the first call of
+       the server process, when .repomap/ was just created, or when hit files look generated (*.min.js, dist/, vendor/);
+       without it the advice still holds.
 
     Args:
         query: Search query (identifier name)
@@ -293,7 +315,6 @@ async def search_identifiers(
     project_root = PROJECT_ROOT
     if not os.path.isdir(project_root):
         return {"error": f"Project root directory not found: {project_root}"}
-    hint = ignore_hint()
     config, areas = load_config(project_root), load_areas(project_root)
     warnings = (config.warnings + moved_tests_hint(config, areas) + areas.warnings
                 + stale_entries(project_root, areas, config.git))
@@ -381,7 +402,10 @@ async def search_identifiers(
             by_file.setdefault(rel_fname, []).append(result)
         results = [{"file": f, "hits": hs} for f, hs in by_file.items()]
 
-        response = {"results": results, "hint": hint}
+        response = {"results": results}
+        hint = ignore_hint("\n".join(by_file))
+        if hint:
+            response["hint"] = hint
         if more_hits:
             response["more_hits"] = more_hits
         errors = parse_error_summary(repo_map.parse_errors, project_root)

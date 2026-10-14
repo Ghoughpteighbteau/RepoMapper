@@ -763,3 +763,129 @@ def test_a_failing_pool_falls_back_to_serial_parsing(tmp_path, monkeypatch, pool
     assert len(ranking.included) == len(files)
     assert all(f in repo_map.TAGS_CACHE for f in files)
     assert any("Parallel parsing failed" in w for w in warnings)
+
+
+def many_defs(prefix, n):
+    return "".join(f"def {prefix}_{i}():\n    return {i}\n\n" for i in range(n))
+
+
+def seeded_with(tmp_path, files, chat, config=None):
+    paths = make_project(tmp_path, files)
+    rm = make_repomap(tmp_path, 4096)
+    if config:
+        rm.config = config
+    return rm.get_repo_map(chat_files=[str(tmp_path / chat)], other_files=[p for p in paths if not p.endswith(chat)])[0]
+
+
+def test_seeded_map_caps_definitions_per_file_and_says_how_many_are_hidden(tmp_path):
+    out = seeded_with(tmp_path, {"pkg/big.py": many_defs("op", 30), "pkg/small.py": "def tiny():\n    pass\n"},
+                      "pkg/big.py")
+
+    assert out.count("def op_") == 12                      # the default cap
+    assert "+18 more defs" in out
+    assert "+0 more" not in out and out.count("more defs") == 1   # small.py is whole
+
+
+def test_seeded_cap_keeps_the_most_referenced_definitions(tmp_path):
+    big = many_defs("op", 30) + "def popular():\n    pass\n"
+    users = {f"pkg/user{i}.py": "from big import popular\n\ndef use():\n    popular()\n" for i in range(3)}
+    out = seeded_with(tmp_path, {"pkg/big.py": big, **users}, "pkg/big.py")
+
+    assert "def popular" in out
+    assert "+19 more defs" in out
+
+
+def test_seeded_defs_cap_is_configurable_and_zero_means_no_cap(tmp_path):
+    from repomapper.config import Config, OutlineConfig
+    files = {"pkg/big.py": many_defs("op", 30), "pkg/small.py": "def tiny():\n    pass\n"}
+    few = seeded_with(tmp_path, files, "pkg/big.py", Config(outline=OutlineConfig(seeded_defs_per_file=5)))
+    assert few.count("def op_") == 5 and "+25 more defs" in few
+    all_defs = seeded_with(tmp_path, files, "pkg/big.py", Config(outline=OutlineConfig(seeded_defs_per_file=0)))
+    assert all_defs.count("def op_") == 30 and "more defs" not in all_defs
+
+
+TEST_AREAS = '[globs."*_test.py"]\nkind = "test"\n'
+
+
+def test_seeded_map_collapses_a_test_file_to_one_line_with_a_few_names(tmp_path):
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text(TEST_AREAS)
+    out = seeded_with(tmp_path, {"pkg/a.py": "def run():\n    pass\n", "pkg/a_test.py": many_defs("test_run", 10)}, "pkg/a.py")
+
+    line = next(line for line in out.splitlines() if line.strip().startswith("a_test.py:"))
+    assert "10 tests" in line and "+7 more" in line and line.count("test_run_") == 3
+    assert "def test_run_5" not in out
+
+
+def test_test_file_with_helpers_counts_them_apart_and_one_without_tests_says_defs(tmp_path):
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text(TEST_AREAS)
+    out = seeded_with(tmp_path, {"pkg/a.py": "def run():\n    pass\n",
+                                 "pkg/a_test.py": "def make():\n    pass\n\ndef test_one():\n    pass\n"}, "pkg/a.py")
+
+    line = next(line for line in out.splitlines() if line.strip().startswith("a_test.py:"))
+    assert "1 tests, 1 other defs" in line and "make" in line
+
+    out = seeded_with(tmp_path, {"pkg/b.py": "def run():\n    pass\n", "pkg/b_test.py": "def make():\n    pass\n"}, "pkg/b.py")
+    assert "b_test.py: 1 defs (make)" in out
+
+
+def test_test_files_are_recognised_by_the_starter_globs_without_areas_toml(tmp_path):
+    out = seeded_with(tmp_path, {"pkg/a.py": "def run():\n    pass\n", "pkg/a_test.py": many_defs("test_run", 10)}, "pkg/a.py")
+
+    assert "10 tests" in out and "def test_run_5" not in out
+
+
+def test_test_names_shown_is_configurable(tmp_path):
+    from repomapper.config import Config, OutlineConfig
+    files = {"pkg/a.py": "def run():\n    pass\n", "pkg/a_test.py": many_defs("test_run", 10)}
+    out = seeded_with(tmp_path, files, "pkg/a.py", Config(outline=OutlineConfig(seeded_test_names=0)))
+
+    line = next(line for line in out.splitlines() if line.strip().startswith("a_test.py:"))
+    assert "10 tests" in line and "test_run_" not in line
+
+
+def test_seeded_map_truncates_long_signature_lines(tmp_path):
+    params = ", ".join(f"argument_number_{i}: int" for i in range(20))
+    source = f"def long_one({params}) -> int:\n    return 1\n\ndef short_one():\n    pass\n"
+    out = seeded_with(tmp_path, {"pkg/a.py": source, "pkg/b.py": "def other():\n    pass\n"}, "pkg/a.py")
+
+    line = next(line for line in out.splitlines() if "def long_one" in line)
+    assert len(line.strip()) <= 120 and line.endswith("...") and line.strip().startswith("1: def long_one(argument_number_0")
+    assert "def short_one():" in out
+
+
+def test_seeded_max_line_length_is_configurable_and_zero_means_no_limit(tmp_path):
+    from repomapper.config import Config, OutlineConfig
+    params = ", ".join(f"argument_number_{i}: int" for i in range(20))
+    files = {"pkg/a.py": f"def long_one({params}) -> int:\n    return 1\n", "pkg/b.py": "def other():\n    pass\n"}
+    off = seeded_with(tmp_path, files, "pkg/a.py", Config(outline=OutlineConfig(seeded_max_line_length=0)))
+    assert "argument_number_19: int) -> int:" in off
+    short = seeded_with(tmp_path, files, "pkg/a.py", Config(outline=OutlineConfig(seeded_max_line_length=40)))
+    assert max(len(line.strip()) for line in short.splitlines() if "def long_one" in line) <= 40
+
+
+OVERLOADS = '''from typing import overload
+
+@overload
+def query(a: int) -> int: ...
+@overload
+def query(a: str) -> str: ...
+@overload
+def query(a: bytes) -> bytes: ...
+def query(a):
+    return a
+
+def other():
+    pass
+
+def query_all():
+    pass
+'''
+
+
+def test_seeded_map_collapses_consecutive_same_name_definitions_to_the_first(tmp_path):
+    out = seeded_with(tmp_path, {"pkg/a.py": OVERLOADS, "pkg/b.py": "def unrelated():\n    pass\n"}, "pkg/a.py")
+
+    assert out.count("def query(") == 1 and "(+3 overloads)" in next(l for l in out.splitlines() if "def query(" in l)
+    assert "def other" in out and "def query_all" in out

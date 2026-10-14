@@ -34,7 +34,7 @@ from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 from repomapper.outline import OutlineFile, find_docs, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
-from repomapper.areas import Area, Areas, annotation, load_areas
+from repomapper.areas import Area, Areas, annotation, load_areas, test_file_checker
 from repomapper.imports import IMPORT_RE, ImportResolver, extract_imports, load_packages
 from repomapper.graph import BaseGraph, OutlinePairs, PairSums, RefGraph, ident_ranks as ident_rank_sums, pagerank
 from repomapper.history import History, activity_factors, head_commit, read_history
@@ -1058,13 +1058,15 @@ class RepoMap:
         cutoff = max(other.values(), default=0.0) * self.config.outline.other_files_rank_share
         tags = [(rank, tag) for rank, tag in tags if in_focus(tag.rel_fname) or other[tag.rel_fname] >= cutoff]
 
+        tags, summaries, hidden, overloads = self.limit_definitions(tags)
+
         def leaves(budget: int) -> Dict[str, str]:
             """Signature blocks per file, as many of the best ranked tags as fit budget (as in the old signature map)."""
             best: Dict[str, str] = {}
             left, right = 0, len(tags)
             while left <= right:
                 mid = (left + right) // 2
-                parts = self.tree_parts(tags[:mid], ranking.chat_rel_fnames) if mid else []
+                parts = self.tree_parts(tags[:mid], ranking.chat_rel_fnames, summaries, hidden, overloads) if mid else []
                 if sum(self.token_count(text) + 2 for _rel, text in parts) <= budget:
                     best = dict(parts)
                     left = mid + 1
@@ -1074,6 +1076,54 @@ class RepoMap:
 
         return render_outline(*self.outline_inputs(ranking, other_fnames, max_tokens),
                               focus=focus, leaves=leaves), ranking.report
+
+    def limit_definitions(self, tags: List[Tuple[float, Tag]]) -> Tuple[List[Tuple[float, Tag]], Dict[str, str], Dict[str, int], Dict[Tuple[str, int], int]]:
+        """Seeded signature blocks without the bulk: each file keeps its best ranked seeded_defs_per_file definitions
+        (hidden: file -> how many were dropped) and a test file keeps only its best one, which stands for the file's
+        one-line summary (summaries: file -> text after the colon), e.g. `12 tests (test_a, test_b, test_c, +9 more)`, or `9 tests, 3 other defs (...)` when it has helpers."""
+        cap, names_shown = self.config.outline.seeded_defs_per_file, self.config.outline.seeded_test_names
+        is_test = test_file_checker(self.areas)
+        by_file: Dict[str, List[Tuple[float, Tag]]] = {}
+        for rank, tag in tags:                       # best ranked first, so each list is too
+            by_file.setdefault(tag.rel_fname, []).append((rank, tag))
+        kept, summaries, hidden, overloads = [], {}, {}, {}
+        for rel, file_tags in by_file.items():
+            if is_test(rel):
+                names = [tag.name for _rank, tag in file_tags]
+                tests = sum(n.lower().startswith("test") for n in names)
+                word = (f"{tests} tests" if tests == len(names) else f"{len(names)} defs" if not tests
+                        else f"{tests} tests, {len(names) - tests} other defs")
+                shown = names[:names_shown]
+                more = len(names) - len(shown)
+                listed = ", ".join(shown + ([f"+{more} more"] if more and shown else []))
+                summaries[rel] = word + (f" ({listed})" if shown else "")
+                file_tags = file_tags[:1]
+            else:
+                file_tags = self.fold_overloads(rel, file_tags, overloads)
+                if cap and len(file_tags) > cap:
+                    hidden[rel] = len(file_tags) - cap
+                    file_tags = file_tags[:cap]
+            kept += file_tags
+        kept.sort(key=lambda pair: pair[0], reverse=True)
+        return kept, summaries, hidden, overloads
+
+    @staticmethod
+    def fold_overloads(rel: str, file_tags: List[Tuple[float, Tag]],
+                       overloads: Dict[Tuple[str, int], int]) -> List[Tuple[float, Tag]]:
+        """file_tags without the second and later of consecutive definitions (by line) with one name; the first one
+        takes their best rank and its (file, line) goes into overloads with the count folded."""
+        by_line = sorted(file_tags, key=lambda pair: pair[1].line)
+        folded: Dict[int, Tuple[float, Tag]] = {}
+        first = None
+        for rank, tag in by_line:
+            if first is not None and tag.name == first.name:
+                best, head = folded[first.line]
+                folded[first.line] = (max(best, rank), head)
+                overloads[(rel, first.line)] = overloads.get((rel, first.line), 0) + 1
+            else:
+                first = tag
+                folded[tag.line] = (rank, tag)
+        return sorted(folded.values(), key=lambda pair: pair[0], reverse=True)
 
     def outline_pairs(self, ranking: "Ranking") -> OutlinePairs:
         """The ranking's edges between files the outline lists, summed per file pair."""
@@ -1171,12 +1221,27 @@ class RepoMap:
             
             return "\n".join(result_lines)
     
+    def shorten_signature(self, rel_fname: str, line: str, overloads: Optional[Dict[Tuple[str, int], int]]) -> str:
+        """A rendered signature line cut to seeded_max_line_length, then marked with its folded overloads."""
+        limit = self.config.outline.seeded_max_line_length
+        if limit and len(line.strip()) > limit:
+            line = line.rstrip()[:len(line) - len(line.lstrip()) + limit - 3] + "..."
+        number = line.split(":", 1)[0].strip()
+        if overloads and number.isdigit() and (rel_fname, int(number)) in overloads:
+            line += f" (+{overloads[(rel_fname, int(number))]} overloads)"
+        return line
+
     def to_tree(self, tags: List[Tuple[float, Tag]], chat_rel_fnames: Set[str]) -> str:
         """Convert ranked tags to formatted tree output."""
         return "\n\n".join(text for _rel, text in self.tree_parts(tags, chat_rel_fnames))
 
-    def tree_parts(self, tags: List[Tuple[float, Tag]], chat_rel_fnames: Set[str]) -> List[Tuple[str, str]]:
-        """(file, rendered signatures) per file of the ranked tags, most important file first."""
+    def tree_parts(self, tags: List[Tuple[float, Tag]], chat_rel_fnames: Set[str],
+                   summaries: Optional[Dict[str, str]] = None,
+                   hidden: Optional[Dict[str, int]] = None,
+                   overloads: Optional[Dict[Tuple[str, int], int]] = None) -> List[Tuple[str, str]]:
+        """(file, rendered signatures) per file of the ranked tags, most important file first. A file in summaries
+        is one line (`file: summary`); a file in hidden ends with `+N more defs`; a line in overloads gets `(+N overloads)`.
+        Lines longer than seeded_max_line_length are cut with "..." (in seeded maps, where the limit applies)."""
         if not tags:
             return []
         
@@ -1205,7 +1270,7 @@ class RepoMap:
             max_rank = max(rank for rank, tag in file_tag_list)
             
             # Render the tree for this file
-            rendered = self.render_tree(abs_fname, rel_fname, lois)
+            rendered = f"{rel_fname}:" if summaries and rel_fname in summaries else self.render_tree(abs_fname, rel_fname, lois)
             if rendered:
                 # Add rank value to the output
                 rendered_lines = rendered.splitlines()
@@ -1218,6 +1283,12 @@ class RepoMap:
                                        note=own.note if own else None))
                 if note.startswith(" — "):
                     note = " " + note[3:]  # "file.py: note", the colon already separates it
+                if summaries and rel_fname in summaries:
+                    parts.append((rel_fname, f"{first_line} {summaries[rel_fname]}{note}"))
+                    continue
+                code_lines = [self.shorten_signature(rel_fname, line, overloads) for line in code_lines] if summaries is not None else code_lines
+                if hidden and rel_fname in hidden:
+                    code_lines.append(f"    +{hidden[rel_fname]} more defs")
                 parts.append((rel_fname, f"{first_line}{note}\n" + "\n".join(code_lines)))
         
         return parts
