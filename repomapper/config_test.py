@@ -84,3 +84,10 @@ def test_seeded_trunk_share_is_configurable(tmp_path):
     write_config(tmp_path, "[outline]\nseeded_trunk_share = 0.4\n")
 
     assert load_config(str(tmp_path)).outline.seeded_trunk_share == 0.4
+
+
+def test_merge_dir_share_is_configurable(tmp_path):
+    assert Config().outline.merge_dir_share == 0.95
+    write_config(tmp_path, "[outline]\nmerge_dir_share = 0.8\n")
+
+    assert load_config(str(tmp_path)).outline.merge_dir_share == 0.8

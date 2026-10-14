@@ -29,8 +29,13 @@ areas (then the internal ones show as before). Crossing edges end at the area in
 (files directly in the area keep their name), so sibling-folder pairs merge into one line and free slots.
 Edges touching files areas.toml marks legacy or deprecated are dropped (both directions, internal or not).
 
+Chains also merge when a directory's biggest subdirectory holds `outline.merge_dir_share` of its files (`ui/src/app/  2110 files
+... (+21 files outside)`): the files the merged-away directories hold elsewhere are counted, not listed, and a directory with a
+focus directory outside the biggest subdirectory is not merged. Non-code sibling directories are merged away
+too (counted in the outside figure) only when they hold at most PLAIN_OUTSIDE_SHARE of the biggest subdirectory's files.
+
 Directory lines give the file count; the language breakdown `(ts 3, js 2)` is only on truncated directories (folded, or
-open with `+N more dirs`/files). Open directories keep just their unlisted test/config counts.
+open with `+N more dirs`/files) whose languages differ from their parent's (other set, or top share more than REPEAT_SHARE_GAP off). Open directories keep just their unlisted test/config counts.
 
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
 but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
@@ -47,7 +52,7 @@ skips). To stay cheap, directories under PLAIN_DIR_MIN_FILES files are dropped, 
 are kept, together they may use PLAIN_BUDGET_SHARE of the token budget (biggest first; the root's own lines can't be
 trimmed later), and a parent lists them among its biggest subdirectories or under `+N more dirs` like any folded one.
 
-Lines below MIN_SHOWN_RANK of the PageRank show no percentage. Git activity shows on directory lines, and
+Lines below MIN_SHOWN_RANK (1%) of the PageRank show no percentage. Git activity shows on directory lines, and
 on file lines only for hot files (HOT_FILE_COMMITS in the last 90 days).
 """
 
@@ -65,7 +70,9 @@ from repomapper.config import IdentifierWeightConfig, OutlineConfig, identifier_
 from repomapper.utils import mostly_single_letters
 
 IMPORTANCE_WEIGHTS = {"core": 4.0, "normal": 1.0, "low": 0.25}   # areas.toml importance -> score multiplier
-MIN_SHOWN_RANK = 0.001     # lines with a smaller share of PageRank show no percentage
+MIN_SHOWN_RANK = 0.01      # lines with a smaller share of PageRank show no percentage
+PLAIN_OUTSIDE_SHARE = 0.1  # a chain merges past non-code sibling directories only when they hold at most this share of its files
+REPEAT_SHARE_GAP = 0.1     # a directory's language breakdown is left out when it has its parent's languages, top share within this
 HOT_FILE_COMMITS = 5       # file lines show git activity only with this many commits in the last 90 days
 MAX_PLAIN_DIRS = 12        # at most this many non-code directory lines in the whole outline, biggest first
 PLAIN_DIR_MIN_FILES = 3    # a non-code directory needs at least this many files to be shown
@@ -76,7 +83,7 @@ DEP_LINE_TOKENS = 20   # budget reserved per dependency line while choosing whic
 
 HEADER = (
     "Outline (no chat_files, mentioned_files or mentioned_idents given): directories folded by size and "
-    "importance, with share of PageRank (if >= 0.1%) and git activity (commits in 90 days, time since the "
+    "importance, with share of PageRank (if >= 1%) and git activity (commits in 90 days, time since the "
     "last; on files only when hot). "
     "Pass files or identifiers to see signatures."
 )
@@ -108,6 +115,7 @@ class Dir:
     kinds: Counter = field(default_factory=Counter)    # areas.toml kind -> files ("test": 38)
     defs: List[Tuple[float, str]] = field(default_factory=list)
     plain: bool = False                                # nothing parseable below: one folded line, not in its parents' totals
+    outside: int = 0                                   # files of the chain's upper dirs that are not under this line's dir
 
     @property
     def label(self) -> str:
@@ -134,9 +142,13 @@ def plain_dirs(files: Dict[str, OutlineFile], plain_files: List[str]) -> Dict[st
     return {path: found[path] for _n, path in sorted(big, key=lambda b: (-b[0], b[1]))[:MAX_PLAIN_DIRS]}
 
 
-def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain: Dict[str, Counter] = {}) -> Dir:
+def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain: Dict[str, Counter] = {},
+               merge_share: float = 1.1, focus: Set[str] = frozenset()) -> Dir:
     """Directory tree with totals (kind files are counted but not listed); each file's defs should already be just its sample names.
-    plain directories are leaves with their own count and languages, kept out of their parents' totals."""
+    plain directories are leaves with their own count and languages, kept out of their parents' totals.
+    Chains collapse: a directory with no files and one subdirectory merges with it, and so does one whose biggest
+    subdirectory holds at least merge_share of its code files (everything else, non-code directories included, is counted
+    in `outside`), unless a focus directory lies outside that subdirectory."""
     root = Dir("")
     for rel in files:
         node = root
@@ -173,15 +185,31 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain:
             d.defs.extend(sub.defs)
         d.defs.sort(reverse=True)
 
+    def merge_target(sub: Dir) -> Optional[Tuple[str, Dir]]:
+        """The (name, subdirectory) sub merges into its line with, if any."""
+        if not sub.files and not sub.hidden and len(sub.dirs) == 1:
+            return next(iter(sub.dirs.items()))
+        code = {name: s for name, s in sub.dirs.items() if not s.plain}
+        if merge_share > 1 or not code:
+            return None
+        name, big = max(code.items(), key=lambda item: (item[1].count, item[0]))
+        plain_outside = sum(s.count for s in sub.dirs.values() if s.plain)
+        if big.count < merge_share * sub.count or plain_outside > PLAIN_OUTSIDE_SHARE * big.count or any(
+                f.startswith(sub.path + "/") and not (f == big.path or f.startswith(big.path + "/")) for f in focus):
+            return None
+        return name, big
+
     def collapse(d: Dir):
-        """Merge single-child chains below d: a subdirectory with no files and one subdirectory of its own."""
+        """Merge near-single-child chains below d (see build_tree)."""
         merged = {}
         for name, sub in d.dirs.items():
             sub.name = sub.name or name
-            while not sub.files and not sub.hidden and len(sub.dirs) == 1:
-                (child_name, child), = sub.dirs.items()
+            while (target := merge_target(sub)) is not None:
+                child_name, child = target
                 child.name = f"{sub.name}/{child.name or child_name}"
                 child.chain = sub.chain + [sub.path]
+                child.outside += (sub.outside + sub.count - child.count
+                                  + sum(s.count for s in sub.dirs.values() if s.plain and s is not child))
                 sub = child
             collapse(sub)
             merged[sub.name] = sub
@@ -284,8 +312,16 @@ def render_outline(
     kinds = {rel: kind for rel in files if (kind := areas.resolve(rel).kind)}
     files = sample_defs(files, kinds, settings, weights)
     candidates = plain_dirs(files, plain_files)
-    root = build_tree(files, kinds, candidates)
+    root = build_tree(files, kinds, candidates)   # chains merge below, once the non-code lines are chosen
     doc_cache: Dict[str, List[str]] = {}
+    parents: Dict[str, Dir] = {}
+
+    def index_parents(d: Dir):
+        for sub in d.dirs.values():
+            parents[sub.path] = d
+            index_parents(sub)
+
+    index_parents(root)
 
     def doc_note(d: Dir) -> str:
         """Docs and areas.toml notes of d, and of the directories collapsed into its line (docs with their
@@ -303,15 +339,33 @@ def render_outline(
                     setattr(merged, key, getattr(entry, key))
         return docs_note + annotation(merged)
 
+    def lone_dir(d: Dir) -> bool:
+        """The root holding nothing but one directory: its line would repeat that directory's."""
+        return not d.path and not d.files and not d.hidden and len(d.dirs) == 1
+
+    def repeats_parent(d: Dir) -> bool:
+        """d's languages (top max_langs) are its parent's, with the top one's share within REPEAT_SHARE_GAP of it. The root
+        is no parent when its line is not printed (it holds nothing but this directory)."""
+        parent = parents.get(d.path)
+        if parent is None or lone_dir(parent) or not d.count or not parent.count:
+            return False
+        top, up = d.langs.most_common(settings.max_langs), parent.langs.most_common(settings.max_langs)
+        return ({lang for lang, _n in top} == {lang for lang, _n in up}
+                and abs(top[0][1] / d.count - up[0][1] / parent.count) <= REPEAT_SHARE_GAP)
+
     def summary(d: Dir, detail: bool = True) -> str:
-        """Dir line; the language breakdown only where the dir is truncated (folded, or listing less than it holds)."""
+        """Dir line; the language breakdown only where the dir is truncated (folded, or listing less than it holds) and
+        differs from its parent's."""
         kinds = ", ".join(f"{n} {kind}" for kind, n in sorted(d.kinds.items()))
+        if detail and repeats_parent(d):
+            detail = False
         if detail:
             langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
             counts = f" ({langs}; {kinds})" if kinds else f" ({langs})"
         else:   # open dirs keep the unlisted test/config counts
             counts = f" ({kinds})" if kinds else ""
-        line = f"{d.label}  {d.count} file{'' if d.count == 1 else 's'}{counts}{pct(d.rank)}"
+        outside = f" (+{d.outside} file{'' if d.outside == 1 else 's'} outside)" if d.outside else ""
+        line = f"{d.label}  {d.count} file{'' if d.count == 1 else 's'}{counts}{outside}{pct(d.rank)}"
         note = activity(d.path)
         return f"{line}, {note}" if note else line
 
@@ -336,9 +390,12 @@ def render_outline(
             left -= token_count(folded_line(d, "  ")) + 1
             if left >= 0:
                 kept[d.path] = candidates[d.path]
-        if len(kept) < len(candidates):
-            root = build_tree(files, kinds, kept)
-            doc_cache.clear()
+        candidates = kept
+    if candidates or settings.merge_dir_share <= 1:
+        root = build_tree(files, kinds, candidates, settings.merge_dir_share, focus)
+        doc_cache.clear()
+        parents.clear()
+        index_parents(root)
 
     forced: Set[str] = set()          # seeded: directories on the way to a focus directory, and those (their paths)
     hosts: Dict[str, Dir] = {}        # seeded: focus directory -> the displayed directory whose line hosts its blocks
@@ -410,10 +467,6 @@ def render_outline(
             return f"  {a} {arrow} {b}"
         n = len(common) + 1
         return f"  {common}/: {a[n:]} {arrow} {b[n:]}"
-
-    def lone_dir(d: Dir) -> bool:
-        """The root holding nothing but one directory: its line would repeat that directory's."""
-        return not d.path and not d.files and not d.hidden and len(d.dirs) == 1
 
     def indented(block: str, indent: str) -> List[str]:
         return [indent + line if line.strip() else "" for line in block.splitlines()]

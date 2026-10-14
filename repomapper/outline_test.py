@@ -127,8 +127,8 @@ def test_importance_weights_are_configurable():
     files = {**leaf_files("x/a/deep", 5, 0.01), **leaf_files("x/b", 5, 0.01),
              **leaf_files("y/a/deep", 7, 0.1), **leaf_files("y/b", 7, 0.1)}
     areas = Areas({"x": Area(importance="core")})
-    flat = render_outline(files, {}, 450, tokens, areas=areas, importance={"core": 1.0, "normal": 1.0, "low": 1.0})
-    tilted = render_outline(files, {}, 450, tokens, areas=areas)
+    flat = render_outline(files, {}, 350, tokens, areas=areas, importance={"core": 1.0, "normal": 1.0, "low": 1.0})
+    tilted = render_outline(files, {}, 350, tokens, areas=areas)
     assert flat != tilted
 
 
@@ -223,7 +223,7 @@ def test_directories_of_only_test_files_stay_folded():
     files = {**leaf_files("src", 3, 0.3), **leaf_files("tests/unit", 5, 0.01), **leaf_files("tests/e2e", 5, 0.01)}
     areas = Areas(globs={"tests/**": Area(importance="low", kind="test")})
     out = render_outline(files, {}, 10_000, tokens, areas=areas)
-    assert "\n  tests/  10 files (py 10; 10 test) 10.0%" in out
+    assert "\n  tests/  10 files (10 test) 10.0%" in out
     assert "unit/" not in out
     assert "src_0" in out
 
@@ -329,12 +329,12 @@ def test_names_defined_in_many_files_rank_lower_as_samples():
     assert "f0.ts 10.0%: renderRow, Widget0" in loose
 
 
-def test_rank_below_a_tenth_of_a_percent_is_hidden():
+def test_rank_below_one_percent_is_hidden():
     files = {"a/big.py": OutlineFile(0.9995, [(0.9, "Big")]), "a/tiny.py": OutlineFile(0.0005, [(0.0005, "Tiny")])}
     out = render_outline(files, {}, 10_000, tokens)
     assert "\n  tiny.py: Tiny" in out
     assert "big.py 100.0%: Big" in out
-    assert "0.1%" in out.splitlines()[0]
+    assert "1%" in out.splitlines()[0]
 
 
 def test_file_lines_show_activity_only_when_hot():
@@ -450,7 +450,7 @@ def test_core_area_opens_a_first_level_before_busier_cheaper_dirs():
     recent = recent_of({f"busy/d{i}": 30 for i in range(8)} | {"busy": 240})
     out = render_outline(files, {}, 290, tokens, areas=areas, recent_commits=recent)
     assert "core/src/  12 files" in out and "alpha/  6 files" in out     # core/src opened its first level...
-    assert "\n  busy/  16 files (py 16) 80.0%:" in out and "d0/" not in out   # ...while the busy dirs are still folded
+    assert "\n  busy/  16 files 80.0%:" in out and "d0/" not in out   # ...while the busy dirs are still folded
     assert tokens(out) <= 290
 
 
@@ -489,10 +489,10 @@ def test_activity_settings_are_configurable():
     files = {**leaf_files("work/a", 5, 0.1), **leaf_files("work/b", 5, 0.1),
              **leaf_files("idle/a", 5, 0.1), **leaf_files("idle/b", 5, 0.1)}   # the idle one sorts first on ties
     recent = recent_of({"work": 40, "work/a": 20, "work/b": 20})
-    budget = tokens(render_outline(files, {}, 10_000, tokens, recent_commits=recent)) * 2 // 3
+    budget = tokens(render_outline(files, {}, 10_000, tokens, recent_commits=recent)) * 7 // 12
     default = render_outline(files, {}, budget, tokens, recent_commits=recent)
     blind = render_outline(files, {}, budget, tokens, recent_commits=recent, settings=OutlineConfig(idle_activity=1.0))
-    assert "\n    a/  5 files" in default.split("work/")[1] and "idle/  10 files (py 10) 100.0%:" in default
+    assert "\n    a/  5 files" in default.split("work/")[1] and "idle/  10 files 100.0%:" in default
     assert "idle/  10 files 100.0%\n" in blind
 
 
@@ -509,7 +509,7 @@ def test_a_wide_directory_lists_a_few_subdirectories_first_and_more_as_the_budge
 def test_shallow_directories_open_before_deeper_ones():
     files = {rel: f for top in ("m", "n") for sub in ("a", "b") for rel, f in leaf_files(f"{top}/{sub}", 10, 0.01).items()}
     out = render_outline(files, {}, 400, tokens)
-    assert out.count(" 10 files (py 10)") == 4      # both m/ and n/ list their subdirectories...
+    assert out.count(" 10 files") == 4      # both m/ and n/ list their subdirectories...
     assert "f0.py" not in out                       # ...before either opens one of them down to files
 
 
@@ -655,3 +655,83 @@ def test_language_breakdown_only_on_truncated_directories():
     out = render_outline(FILES, EDGES, 10_000, tokens, areas=Areas({"lib": Area(fold=True)}))
     assert "./  4 files 100.0%\n" in out and "ui/  1 file 20.0%\n" in out   # open dirs: counts only
     assert "lib/types/  2 files (ts 2)" in out                         # folded: breakdown
+
+
+def many(prefix, n, rank=0.01, ext="ts"):
+    return {f"{prefix}/f{i}.{ext}": OutlineFile(rank, [(rank, f"{prefix.replace('/', '_')}{i}")]) for i in range(n)}
+
+
+def near_chain_files():
+    files = {"ui/main.ts": OutlineFile(0.01, [(0.01, "Main")])}
+    files.update(many("ui/src/app", 40))
+    files.update(many("ui/src/app/form", 30))
+    files.update(many("ui/src/app/task", 30))
+    files.update(many("ui/e2e", 1))
+    files.update(many("lib", 20))
+    return files
+
+
+def test_near_single_child_chain_merges_and_counts_what_is_outside():
+    out = render_outline(near_chain_files(), {}, 10_000, tokens)
+    # ui holds 2 files outside ui/src/app (main.ts, e2e), ui/src holds none; 100 of 102 is >= 95%
+    assert re.search(r"^\s*ui/src/app/  100 files .*\(\+2 files outside\)", out, re.M), out
+    assert "  src/  " not in out and "\n  app/  " not in out
+
+
+def test_near_chain_merge_share_is_configurable_and_can_be_switched_off():
+    files = near_chain_files()
+    assert "ui/src/app/" in render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(merge_dir_share=0.9))
+    out = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(merge_dir_share=1.1))
+    assert "ui/src/app/" not in out and "src/app/  " in out and "outside" not in out
+
+
+def test_near_chain_merge_keeps_docs_notes_and_edges_with_full_paths():
+    areas = Areas({"ui": Area(note="Angular frontend")})
+    edges = {("lib/f0.ts", "ui/src/app/f0.ts"): 1.0}
+    out = render_outline(near_chain_files(), edges, 10_000, tokens, areas=areas,
+                         docs=lambda d: ["README.md"] if d == "ui" else [])
+    assert "ui/src/app/  100 files" in out and "[ui/README.md]" in out and "— Angular frontend" in out
+    assert "lib/f0.ts -> ui/src/app/f0.ts" in out
+
+
+def test_near_chain_does_not_merge_a_directory_with_a_real_sibling():
+    files = many("a/big", 10)
+    files.update(many("a/other", 4))
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "a/big/" not in out and "\na/  14 files" in out.replace("\n./", "\n")
+
+
+def test_near_chain_merge_never_hides_a_focus_directory_outside_it():
+    files = near_chain_files()
+    out = render_outline(files, {}, 10_000, tokens, focus={"ui/e2e"},
+                         leaves=lambda budget: {})
+    assert "e2e/" in out
+
+
+def test_language_breakdown_is_skipped_when_it_repeats_the_parents():
+    files = {**many("a/x", 30), **many("a/y", 30), **many("b", 30, ext="py")}
+    out = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(files_per_dir=0))
+    assert re.search(r"^\s+x/  30 files [\d.]+%", out, re.M)       # same languages as a/: no breakdown
+    assert re.search(r"^\s*b/  30 files \(py 30\)", out, re.M)      # the root has ts too
+
+
+def test_language_breakdown_stays_when_the_languages_differ_from_the_parents():
+    files = {**many("a/x", 30, ext="js"), **many("a/y", 30), **many("a/z", 30)}
+    out = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(files_per_dir=0))
+    assert re.search(r"^\s+x/  30 files \(js 30\)", out, re.M)
+    assert re.search(r"^\s+y/  30 files \(ts 30\)", out, re.M)   # a/ is ts 60, js 30: a different set
+
+
+def test_small_pagerank_shares_show_no_percentage():
+    files = {"a/x.py": OutlineFile(0.995, [(0.99, "x")]), "a/y.py": OutlineFile(0.005, [(0.005, "y")])}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "x.py 99.5%" in out and "y.py: y" in out and "y.py 0.5%" not in out
+    assert "(if >= 1%)" in HEADER
+
+
+def test_near_chain_merge_counts_small_non_code_siblings_as_outside_but_keeps_big_ones():
+    code = many("ui/src/app", 100)
+    small = render_outline(code, {}, 10_000, tokens, plain_files=[f"ui/src/assets/a{i}.png" for i in range(5)])
+    assert re.search(r"ui/src/app/  100 files .*\(\+5 files outside\)", small), small
+    big = render_outline(code, {}, 10_000, tokens, plain_files=[f"ui/src/assets/a{i}.png" for i in range(30)])
+    assert "outside" not in big and "assets/  30 files" in big

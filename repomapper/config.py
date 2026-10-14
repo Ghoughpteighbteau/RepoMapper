@@ -88,6 +88,9 @@ class OutlineConfig:
     # Seeded maps (chat_files, mentioned_files, mentioned_idents): share of the token budget for the trunk (the path from the
     # root to the focused files, folded siblings, Dependencies); the rest goes to signatures
     seeded_trunk_share: float = 0.2
+    # A directory whose biggest subdirectory holds at least this share of its files merges with it into one line
+    # (`ui/src/app/`); the files outside show as `(+N files outside)`. Above 1 merges only empty pass-through directories.
+    merge_dir_share: float = 0.95
     # Doc files listed in brackets after a directory in the outline: globs on file names, case-insensitive
     doc_globs: List[str] = field(default_factory=lambda: ["README*", "CLAUDE.md", "*.README.md"])
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
