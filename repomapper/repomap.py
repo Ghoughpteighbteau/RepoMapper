@@ -84,7 +84,7 @@ Examples:
     parser.add_argument(
         "--mentioned-files",
         nargs="*",
-        help="Files explicitly mentioned (given higher priority)"
+        help="Files or directories explicitly mentioned (given higher priority); a directory opens to signatures for every file under it"
     )
     
     parser.add_argument(

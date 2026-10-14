@@ -1,5 +1,7 @@
 """
-Directory outline: the repo map shown when there's no context to zoom in on.
+Directory outline: the repo map shown when there's no context to zoom in on. With context (render_outline(focus=...))
+it is the trunk of a zoomed map: the focus directories and the ones above them are forced open, lean, and signature
+blocks go inside, indented under their directory (see render_outline).
 
 The token budget is spent on a priority queue of expansions. Everything starts folded to one line. A candidate
 is opening a folded directory (its own line, its first FIRST_LEVEL_DIRS subdirectories folded, its biggest
@@ -74,6 +76,11 @@ HEADER = (
     "importance, with share of PageRank (if >= 0.1%) and git activity (commits in 90 days, time since the "
     "last; on files only when hot). "
     "Pass files or identifiers to see signatures."
+)
+HEADER_SEEDED = (
+    "Zoomed map: the path from the root to the given files with sibling directories folded (share of PageRank, git "
+    "activity), their signatures indented under their directory, Dependencies between areas (the focus area's first), "
+    "then other ranked files."
 )
 
 
@@ -252,10 +259,24 @@ def render_outline(
     weights: IdentifierWeightConfig = IdentifierWeightConfig(),
     plain_files: List[str] = (),
     import_edges: Dict[Tuple[str, str], float] = {},
+    focus: Optional[Set[str]] = None,
+    leaves: Optional[Callable[[int], Dict[str, str]]] = None,
 ) -> Optional[str]:
-    """Render the outline, splitting max_tokens top-down among directories by size and importance."""
+    """Render the outline, splitting max_tokens top-down among directories by size and importance.
+
+    Seeded (focus is not None): the outline is the trunk, rendered with settings.seeded_trunk_share of max_tokens, and
+    the directories in `focus` (a seeded file's directory, or a directory to zoom in on, root-relative, "" for the
+    root) and everything above them are forced open (listing subdirectories folded, no file lines). leaves(budget)
+    returns signature blocks per file (rank order, at most budget tokens); blocks of files in a focus directory
+    (or below a focused one) go indented under it, the rest follow the trunk. The result never exceeds max_tokens."""
     if not files:
         return None
+    seeded = focus is not None
+    focus = {a.strip("/") for a in focus or ()}
+    total_tokens = max_tokens
+    if seeded:
+        max_tokens = int(max_tokens * settings.seeded_trunk_share)
+    header = HEADER_SEEDED if seeded else HEADER
     files_per_dir, max_edges = settings.files_per_dir, settings.max_edges
     kinds = {rel: kind for rel in files if (kind := areas.resolve(rel).kind)}
     files = sample_defs(files, kinds, settings, weights)
@@ -312,6 +333,22 @@ def render_outline(
             root = build_tree(files, kinds, kept)
             doc_cache.clear()
 
+    forced: Set[str] = set()          # seeded: directories on the way to a focus directory, and those (their paths)
+    hosts: Dict[str, Dir] = {}        # seeded: focus directory -> the displayed directory whose line hosts its blocks
+
+    def find_forced(d: Dir):
+        paths = d.chain + [d.path]
+        if not d.plain and (not d.path or any(a == p or a.startswith(p + "/") for a in focus for p in paths)):
+            forced.add(d.path)
+            for a in focus:
+                if a in paths:
+                    hosts[a] = d
+            for sub in d.dirs.values():
+                find_forced(sub)
+
+    if seeded:
+        find_forced(root)
+
     ranked_cache: Dict[str, List[Dir]] = {}
     shown_limit: Dict[str, int] = {}   # subdirectories listed per open directory; grows with the budget, up to dirs_per_dir
 
@@ -327,8 +364,11 @@ def render_outline(
         if d.path not in ranked_cache:
             top_rank = max((s.rank for s in d.dirs.values()), default=0.0) or 1.0
             ranked_cache[d.path] = sorted(d.dirs.values(),
-                                          key=lambda s: (-math.sqrt(s.count) * (s.rank / top_rank + activity_factor(s)), s.path))
-        return ranked_cache[d.path][:shown_limit.get(d.path, settings.dirs_per_dir)]
+                                          key=lambda s: (s.path not in forced,
+                                                         -math.sqrt(s.count) * (s.rank / top_rank + activity_factor(s)), s.path))
+        ranked = ranked_cache[d.path]
+        # The way to a focus directory is always listed, whatever the limit
+        return ranked[:max(shown_limit.get(d.path, settings.dirs_per_dir), sum(s.path in forced for s in ranked))]
 
     lean: Set[str] = set()   # large directories opened without their file lines
 
@@ -364,8 +404,18 @@ def render_outline(
         """The root holding nothing but one directory: its line would repeat that directory's."""
         return not d.path and not d.files and not d.hidden and len(d.dirs) == 1
 
-    def render(open_dirs: Set[str], deps: List[Tuple[str, str, bool]] = ()) -> str:
-        lines = [HEADER, ""]
+    def indented(block: str, indent: str) -> List[str]:
+        return [indent + line if line.strip() else "" for line in block.splitlines()]
+
+    def render(open_dirs: Set[str], deps: List[Tuple[str, str, bool]] = (), blocks: Dict[str, str] = {}) -> str:
+        lines = [header, ""]
+        # Blocks go under the line of the nearest focus directory above their file; the rest follow the trunk
+        hosted: Dict[str, List[str]] = defaultdict(list)
+        loose: List[str] = []
+        for rel, block in blocks.items():
+            near = max((a for a in hosts if posixpath.dirname(rel) == a or (a and posixpath.dirname(rel).startswith(a + "/"))),
+                       key=len, default=None)
+            (hosted[hosts[near].path] if near is not None else loose).append(block)
 
         def walk(d: Dir, depth: int):
             indent = "  " * depth
@@ -380,11 +430,17 @@ def render_outline(
                 walk(sub, depth + 1)
             if len(d.dirs) > len(shown(d)):
                 lines.append(f"{indent}  +{len(d.dirs) - len(shown(d))} more dirs")
-            lines.extend(file_lines(d, indent, file_limit(d)))
+            if d.path not in hosted:   # a host's files come as signature blocks
+                lines.extend(file_lines(d, indent, file_limit(d)))
+            for block in hosted.pop(d.path, ()):
+                lines.extend([""] + indented(block, indent + "  "))
 
         walk(root, 0)
+        loose += [block for group in hosted.values() for block in group]   # hosts that were not displayed
         if deps:
             lines += ["", "Dependencies (strongest references first):"] + [edge_line(*dep) for dep in deps]
+        if loose:
+            lines += ["", "Other ranked files:"] + [line for block in loose for line in ("", *block.splitlines())]
         return "\n".join(lines)
 
     def node_of(rel: str, open_dirs: Set[str]) -> str:
@@ -471,17 +527,47 @@ def render_outline(
             present = [p for p in both_ways if p in direction]
             first = max(present, key=lambda p: (direction[p], p == pair))
             merged[key] = (total, *first, len(present) == 2)
-        ranked = sorted(merged.values(), key=lambda m: m[0], reverse=True)[:max_edges]
+        def near_focus(node: str) -> bool:
+            path = node.rstrip("/")
+            return node != "./" and any(a and (a == path or a.startswith(path + "/") or path.startswith(a + "/")) for a in focus)
+
+        # Seeded: the focus area's edges first (who uses it, what it uses), then the strongest of the rest
+        ranked = sorted(merged.values(), key=lambda m: (near_focus(m[1]) or near_focus(m[2]), m[0]), reverse=True)[:max_edges]
         return [(a, b, both) for _w, a, b, both in ranked]
 
-    def with_dependencies(open_dirs: Set[str]) -> str:
+    def with_dependencies(open_dirs: Set[str]) -> Tuple[str, List[Tuple[str, str, bool]]]:
         # Aggregating edges is costly on big repos, so it runs once for the chosen layout
         deps = dependencies(open_dirs)
         out = render(open_dirs, deps)
-        while deps and token_count(out) > max_tokens:
+        limit = max_tokens
+        if seeded:
+            # The way to the focus is forced open whatever it costs; the dependencies still get their reserve
+            limit = max(limit, token_count(render(open_dirs)) + min(max_edges * DEP_LINE_TOKENS, total_tokens // 5))
+        while deps and token_count(out) > limit:
             deps = deps[:-1]
             out = render(open_dirs, deps)
-        return out
+        return out, deps
+
+    def with_leaves(open_dirs: Set[str], trunk: str, deps: List[Tuple[str, str, bool]]) -> str:
+        """The trunk with signature blocks added: they get what the trunk left of the whole budget, less what indenting
+        and separating them costs (the blocks are asked for again with a smaller budget until the whole fits)."""
+        budget = total_tokens - token_count(trunk)
+        while budget > 0:
+            blocks = leaves(budget)
+            if not blocks:
+                break
+            out = render(open_dirs, deps, blocks)
+            over = token_count(out) - total_tokens
+            if over <= 0:
+                return out
+            budget -= over + 4
+        while deps and token_count(trunk) > total_tokens:
+            deps = deps[:-1]
+            trunk = render(open_dirs, deps)
+        lines = trunk.splitlines()
+        while lines and token_count("\n".join(lines)) > total_tokens:
+            lines.pop()
+        return "\n".join(lines)
 
     def folds(d: Dir) -> bool:
         """Kept to one line: a non-code directory, fold = true in areas.toml, or nothing but tests and configs inside."""
@@ -538,7 +624,9 @@ def render_outline(
         x sqrt(files) x activity per token. Core areas come first: tier 0 is a core directory with no open core
         level above it (pass-throughs to a single subdirectory aren't a level), and the directories above one."""
         open_dirs.add(root.path)
-        left = budget - cost(root, "open")
+        if seeded:
+            lean.add(root.path)
+        left = budget - cost(root, "lean" if seeded else "open")
         queue: List[Tuple[int, float, int, str, Dir, int]] = []   # tier, -score, order, "open" or "more", dir, core level
         order = 0
 
@@ -563,7 +651,7 @@ def render_outline(
             if ranked:
                 extra = max(sum(cost(sub, "folded") for sub in ranked), 1)
                 score = (importance[areas.resolve(d.path).importance] * math.sqrt(sum(sub.count for sub in ranked))
-                         * activity_factor(d) / (extra * depth_of(d)))
+                         * activity_factor(d) / (extra * max(depth_of(d), 1)))
                 push(1, score, "more", d, level)
 
         def offer_children(d: Dir, subs: List[Dir], level: int):
@@ -572,7 +660,26 @@ def render_outline(
             for sub in subs:
                 offer(sub, level if is_core(sub) else 0)
 
-        offer_children(root, shown(root), 0)
+        if seeded:
+            # The way to the focus directories opens first, lean (the focused files come as signature blocks), whatever it costs
+            stack = [root]
+            while stack:
+                d = stack.pop(0)
+                path_subs = [sub for sub in shown(d) if sub.path in forced]
+                if d.path != root.path:
+                    shown_limit[d.path] = max(min(len(d.dirs), FIRST_LEVEL_DIRS, settings.dirs_per_dir), len(path_subs))
+                    lean.add(d.path)
+                    open_dirs.add(d.path)
+                    left -= cost(d, "lean") - cost(d, "folded")
+                    for sub in shown(d):
+                        depth_cache.setdefault(sub.path, depth_of(d) + 1)
+                if d.path == root.path:
+                    shown_limit[d.path] = max(shown_limit.get(d.path, min(len(d.dirs), FIRST_LEVEL_DIRS, settings.dirs_per_dir)), len(path_subs))
+                offer_children(d, [sub for sub in shown(d) if sub.path not in forced], 0)
+                offer_more(d, 0)
+                stack.extend(path_subs)
+        else:
+            offer_children(root, shown(root), 0)
         while queue:
             _tier, _score, _n, kind, d, level = heapq.heappop(queue)
             if kind == "more":
@@ -598,6 +705,7 @@ def render_outline(
             if d.path not in lean:
                 offer_more(d, level)
 
-    tree_budget = max_tokens - min(max_edges * DEP_LINE_TOKENS, max_tokens // 5) - token_count(HEADER) - 2
+    tree_budget = max_tokens - min(max_edges * DEP_LINE_TOKENS, max_tokens // 5) - token_count(header) - 2
     allocate(tree_budget)
-    return with_dependencies(open_dirs)
+    trunk, deps = with_dependencies(open_dirs)
+    return with_leaves(open_dirs, trunk, deps) if seeded and leaves else trunk

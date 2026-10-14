@@ -85,6 +85,9 @@ class OutlineConfig:
     # Multiplier for shared-name edges between two JS/TS files in the Dependencies section; imports give those edges, so
     # names alone (`Account`, `get`) link unrelated apps. 0 drops them, 1 keeps them as before.
     shared_name_edge_weight: float = 0.0
+    # Seeded maps (chat_files, mentioned_files, mentioned_idents): share of the token budget for the trunk (the path from the
+    # root to the focused files, folded siblings, Dependencies); the rest goes to signatures
+    seeded_trunk_share: float = 0.2
     # Doc files listed in brackets after a directory in the outline: globs on file names, case-insensitive
     doc_globs: List[str] = field(default_factory=lambda: ["README*", "CLAUDE.md", "*.README.md"])
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high

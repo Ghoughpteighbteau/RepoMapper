@@ -3,6 +3,7 @@ RepoMap class for generating repository maps.
 """
 
 import os
+import posixpath
 import sys
 from pathlib import Path
 from collections import Counter, namedtuple, defaultdict
@@ -173,6 +174,7 @@ class RepoMap:
         # Initialize caches
         self.tree_cache = {}
         self.tree_context_cache = {}
+        self.tree_render_cache = {}
         self.map_cache = {}
         # Files that failed to parse in this run (fname -> error), surfaced in reports.
         self.parse_errors: Dict[str, str] = {}
@@ -408,6 +410,11 @@ class RepoMap:
         self.parse_errors[fname] = message
         self.output_handlers['error'](f"{fname}: {message}")
 
+    def mentioned_dirs(self, mentioned_fnames: Set[str]) -> Set[str]:
+        """Root-relative paths of the directories among the mentioned names (absolute or relative, trailing slash ok)."""
+        rels = {self.get_rel_fname(str((self.root / f).resolve())) for f in mentioned_fnames if (self.root / f).is_dir()}
+        return {"" if rel == "." else rel for rel in rels}
+
     def normalize_mentioned_fnames(self, mentioned_fnames: Set[str]) -> Set[str]:
         """Mentioned files may be absolute or relative to the root; return root-relative names."""
         return {self.get_rel_fname(str((self.root / f).resolve())) for f in mentioned_fnames}
@@ -422,8 +429,12 @@ class RepoMap:
     ) -> Tuple[List[Tuple[float, Tag]], FileReport]:
         """Get ranked tags using PageRank algorithm with file report."""
         ranking = self.build_ranking(chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh)
+        return self.ranked_tags_of(ranking), ranking.report
+
+    def ranked_tags_of(self, ranking: "Ranking") -> List[Tuple[float, Tag]]:
+        """Definition tags of a ranking, best first, with the boosts for mentioned and chat files and identifiers."""
         if ranking.graph is None:
-            return [], ranking.report
+            return []
         ranks, ident_ranks = ranking.file_ranks, ranking.ident_ranks
         mentioned_fnames, mentioned_idents = ranking.mentioned_fnames, ranking.mentioned_idents
         chat_rel_fnames = ranking.chat_rel_fnames
@@ -459,7 +470,7 @@ class RepoMap:
         # Sort by rank (descending)
         ranked_tags.sort(key=lambda x: x[0], reverse=True)
 
-        return ranked_tags, ranking.report
+        return ranked_tags
 
     def build_ranking(
         self,
@@ -668,7 +679,51 @@ class RepoMap:
         ranking = self.build_ranking([], other_fnames, force_refresh=force_refresh)
         if ranking.graph is None:
             return None, ranking.report
+        return render_outline(*self.outline_inputs(ranking, other_fnames, max_tokens)), ranking.report
 
+    def get_seeded_outline(self, chat_fnames: List[str], other_fnames: List[str], max_tokens: int,
+                           mentioned_fnames: Optional[Set[str]] = None, mentioned_idents: Optional[Set[str]] = None,
+                           focus_dirs: Set[str] = frozenset(),
+                           force_refresh: bool = False) -> Tuple[Optional[str], FileReport]:
+        """The outline as a trunk to the seeded files (chat files, mentioned files, files under focus_dirs, files defining
+        mentioned identifiers) with signature blocks of their directories' files inside it. focus_dirs are root-relative."""
+        ranking = self.build_ranking(chat_fnames, other_fnames, mentioned_fnames, mentioned_idents, force_refresh)
+        if ranking.graph is None:
+            return None, ranking.report
+        tags = self.ranked_tags_of(ranking)
+        focus = {posixpath.dirname(rel) for rel in ranking.chat_rel_fnames | ranking.mentioned_fnames
+                 if rel in ranking.file_ranks and os.path.isfile(self.root / rel)} | set(focus_dirs)
+        # Identifiers seed the files that define them (a few, best ranked first)
+        defining = sorted({rel for rel, names in ranking.definitions.items() if names & ranking.mentioned_idents},
+                          key=lambda rel: -ranking.file_ranks.get(rel, 0.0))[:5]
+        focus |= {posixpath.dirname(rel) for rel in defining}
+
+        def in_focus(rel: str) -> bool:
+            return any(posixpath.dirname(rel) == a or (a and posixpath.dirname(rel).startswith(a + "/")) for a in focus)
+
+        # Outside the focus only definitions something refers to qualify; focused directories show everything
+        tags = [(rank, tag) for rank, tag in tags
+                if in_focus(tag.rel_fname) or ranking.ident_ranks.get((tag.rel_fname, tag.name), 0.0) > 0]
+
+        def leaves(budget: int) -> Dict[str, str]:
+            """Signature blocks per file, as many of the best ranked tags as fit budget (as in the old signature map)."""
+            best: Dict[str, str] = {}
+            left, right = 0, len(tags)
+            while left <= right:
+                mid = (left + right) // 2
+                parts = self.tree_parts(tags[:mid], ranking.chat_rel_fnames) if mid else []
+                if sum(self.token_count(text) + 2 for _rel, text in parts) <= budget:
+                    best = dict(parts)
+                    left = mid + 1
+                else:
+                    right = mid - 1
+            return best
+
+        return render_outline(*self.outline_inputs(ranking, other_fnames, max_tokens),
+                              focus=focus, leaves=leaves), ranking.report
+
+    def outline_inputs(self, ranking: "Ranking", other_fnames: List[str], max_tokens: int) -> tuple:
+        """Arguments for render_outline: files with shares of PageRank, edges, budget and the callbacks."""
         files = {}
         plain_files = [self.get_rel_fname(fname) for fname in other_fnames
                        if not is_parseable(fname) and os.path.isfile(fname)]
@@ -717,12 +772,17 @@ class RepoMap:
         recent_commits = history.recent_commits if history else (lambda path: 0)
         ranking_config = self.config.ranking
         importance = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
-        return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
-                              activity, importance, recent_commits,
-                              ranking_config.identifier_weight, plain_files, import_edges), ranking.report
+        return (files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
+                activity, importance, recent_commits, ranking_config.identifier_weight, plain_files, import_edges)
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""
+        key = (abs_fname, tuple(lois))
+        if key not in self.tree_render_cache:
+            self.tree_render_cache[key] = self.render_tree_uncached(abs_fname, rel_fname, lois)
+        return self.tree_render_cache[key]
+
+    def render_tree_uncached(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         code = self.read_text_func_internal(abs_fname)
         if not code:
             return ""
@@ -751,8 +811,12 @@ class RepoMap:
     
     def to_tree(self, tags: List[Tuple[float, Tag]], chat_rel_fnames: Set[str]) -> str:
         """Convert ranked tags to formatted tree output."""
+        return "\n\n".join(text for _rel, text in self.tree_parts(tags, chat_rel_fnames))
+
+    def tree_parts(self, tags: List[Tuple[float, Tag]], chat_rel_fnames: Set[str]) -> List[Tuple[str, str]]:
+        """(file, rendered signatures) per file of the ranked tags, most important file first."""
         if not tags:
-            return ""
+            return []
         
         # Group tags by file
         file_tags = defaultdict(list)
@@ -766,7 +830,7 @@ class RepoMap:
             reverse=True
         )
         
-        tree_parts = []
+        parts = []
         
         for rel_fname, file_tag_list in sorted_files:
             # Get lines of interest
@@ -792,13 +856,13 @@ class RepoMap:
                                        note=own.note if own else None))
                 if note.startswith(" — "):
                     note = " " + note[3:]  # "file.py: note", the colon already separates it
-                tree_parts.append(
+                parts.append((rel_fname,
                     f"{first_line}{note}\n"
                     f"(Rank value: {max_rank:.4f})\n\n" # Added an extra newline here
                     + "\n".join(code_lines)
-                )
+                ))
         
-        return "\n\n".join(tree_parts)
+        return parts
     
     def get_ranked_tags_map(
         self,
@@ -918,10 +982,15 @@ class RepoMap:
                 # Nothing to zoom in on: show how the repo is organized rather than its most popular utilities
                 map_string, file_report = self.get_outline(other_files, max_map_tokens, force_refresh)
             else:
-                # get_ranked_tags_map returns (map_string, file_report)
-                map_string, file_report = self.get_ranked_tags_map(
-                    chat_files, other_files, max_map_tokens,
-                    mentioned_fnames, mentioned_idents, force_refresh
+                # Zoom in: a trunk to the seeded files with their signatures inside it. A mentioned directory seeds
+                # every file under it and opens to signatures.
+                focus_dirs = self.mentioned_dirs(mentioned_fnames or set())
+                seeds = {f for f in (mentioned_fnames or set()) if not (self.root / f).is_dir()}
+                for rel_dir in focus_dirs:
+                    prefix = rel_dir + "/" if rel_dir else ""
+                    seeds |= {self.get_rel_fname(f) for f in other_files + chat_files if self.get_rel_fname(f).startswith(prefix)}
+                map_string, file_report = self.get_seeded_outline(
+                    chat_files, other_files, max_map_tokens, seeds, mentioned_idents, focus_dirs, force_refresh
                 )
         except RecursionError:
             self.output_handlers['error']("Disabling repo map, git repo too large?")

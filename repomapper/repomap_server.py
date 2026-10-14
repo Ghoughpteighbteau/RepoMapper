@@ -113,6 +113,10 @@ async def repo_map(
     files. Provide filenames relative to the project root. In addition to the files provided, relevant related files will also be included with a
     very small ranking boost.
 
+    With chat_files, mentioned_files or mentioned_idents the map is zoomed: a thin trunk (the path from the root to those files, sibling directories
+    folded to one line, and which areas depend on which) with signatures of the seeded files' directories inside it. With none of them it is
+    a directory outline of the whole project.
+
     Files matching .gitignore or .repomap/ignore (gitignore syntax, relative to the project root) are skipped. If the
     map is dominated by vendored, minified, bundled or generated files, suggest adding them to .repomap/ignore.
 
@@ -120,7 +124,7 @@ async def repo_map(
     :param other_files: A list of other relevant file paths in the repository to consider for the map. They receive a lower ranking boost than mentioned_files and chat_files.
     :param token_limit: The maximum number of tokens the generated repository map should occupy. Defaults to map.token_limit in .repomap/config.toml (8192).
     :param exclude_unranked: If True, files with a PageRank of 0.0 will be excluded from the map. Defaults to False.
-    :param mentioned_files: Optional list of file paths explicitly mentioned in the conversation and receive a mid-level ranking boost.
+    :param mentioned_files: Optional list of file paths explicitly mentioned in the conversation and receive a mid-level ranking boost. A directory here is a focus: every file under it is seeded and the directory opens to signatures while the rest of the map stays folded.
     :param mentioned_idents: Optional list of identifiers explicitly mentioned in the conversation, to boost their ranking.
     :param verbose: If True, enables verbose logging for the RepoMap generation process. Defaults to False.
     :param max_context_window: Optional maximum context window size for token calculation, used to adjust map token limit when no chat files are provided.

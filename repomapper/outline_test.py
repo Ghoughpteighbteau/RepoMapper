@@ -357,7 +357,7 @@ def test_edges_inside_one_top_level_area_are_dropped_when_others_exist():
     edges = {("ui/app/a/x.py", "ui/app/b/y.py"): 9.0, ("api/s.py", "lib/m.py"): 1.0}
     out = render_outline(AREAS, edges, 10_000, tokens)
     assert "api/s.py -> lib/m.py" in out
-    assert "a/x.py" not in out.split("Dependencies")[1]
+    assert "a/x.py" not in out.split("Dependencies (strongest")[1]
 
 
 def test_edges_inside_one_area_show_when_they_are_all_there_is():
@@ -368,7 +368,7 @@ def test_edges_inside_one_area_show_when_they_are_all_there_is():
 def test_edges_from_sibling_folders_collapse_to_their_area_and_free_slots():
     edges = {("ui/app/a/x.py", "api/s.py"): 3.0, ("ui/app/b/y.py", "api/s.py"): 2.0, ("ui/app/a/x.py", "lib/m.py"): 1.0}
     out = render_outline(AREAS, edges, 10_000, tokens, settings=OutlineConfig(max_edges=2))
-    deps = out.split("Dependencies")[1]
+    deps = out.split("Dependencies (strongest")[1]
     assert "  ui/app/ -> api/s.py\n" in deps
     assert "  ui/app/ -> lib/m.py" in deps
 
@@ -382,7 +382,7 @@ def test_edges_touching_legacy_or_deprecated_areas_are_dropped():
     areas = Areas({"old": Area(status="legacy"), "lib": Area(status="deprecated")})
     edges = {("ui/app/z.py", "old/o.py"): 9.0, ("lib/m.py", "api/s.py"): 8.0, ("ui/app/z.py", "api/s.py"): 1.0}
     out = render_outline(AREAS, edges, 10_000, tokens, areas=areas)
-    deps = out.split("Dependencies")[1]
+    deps = out.split("Dependencies (strongest")[1]
     assert "old/" not in deps and "lib/" not in deps and "ui/app/z.py -> api/s.py" in deps
     only = render_outline(AREAS, {("ui/app/z.py", "old/o.py"): 9.0}, 10_000, tokens, areas=areas)
     assert "Dependencies" not in only
@@ -556,3 +556,93 @@ def test_doc_globs_pick_doc_files_by_name():
     assert find_docs(names, ["README.md", "CLAUDE.md", "*.README.md"]) == ["CLAUDE.md", "README.md", "api.README.md", "readme.md"]
     assert find_docs(names, ["*.rst"]) == ["README.rst"]
     assert find_docs(names, []) == []
+
+
+# Seeded outlines: a thin trunk to the focused directories with their signature blocks inside it
+
+def blocks_for(*names, size=1):
+    """A leaves callback: one block per name, `size` code lines each, as many as fit the token budget it is given."""
+    def leaves(budget):
+        out, used = {}, 0
+        for name in names:
+            block = f"{name}:\n(Rank value: 0.1)\n\n" + "\n".join(f"  {i}: def sig_{i}()" for i in range(size))
+            used += tokens(block)
+            if used > budget:
+                break
+            out[name] = block
+        return out
+    return leaves
+
+
+SEEDED_FILES = {
+    **leaf_files("lib/steps/src", 3, 0.2),
+    **leaf_files("red/src", 3, 0.2),
+    **leaf_files("api/src", 3, 0.2),
+    **leaf_files("docs_site/pages", 30, 0.01),
+}
+SEEDED_EDGES = {("red/src/f0.py", "lib/steps/src/f0.py"): 3.0, ("api/src/f0.py", "lib/steps/src/f1.py"): 2.0,
+                ("api/src/f1.py", "docs_site/pages/f1.py"): 9.0}
+
+
+def test_seeded_outline_puts_signature_blocks_under_the_focused_directory():
+    out = render_outline(SEEDED_FILES, SEEDED_EDGES, 2000, tokens, focus={"lib/steps/src"},
+                         leaves=blocks_for("lib/steps/src/f0.py", "lib/steps/src/f1.py"))
+    lines = out.splitlines()
+    host = next(i for i, line in enumerate(lines) if line.strip().startswith("lib/steps/src/  3 files"))
+    block = lines.index(next(line for line in lines if line.strip() == "lib/steps/src/f0.py:"))
+    assert block > host
+    assert lines[block].startswith("    ")                       # indented below its directory
+    assert "  0: def sig_0()" in out
+    assert "+3 files" not in out                                  # its files are the blocks
+    assert "docs_site/pages/  30 files" in out and "docs_site/pages/f0.py" not in out   # the rest stays folded
+
+
+def test_seeded_outline_opens_the_path_even_for_a_low_importance_directory():
+    areas = Areas({"lib": Area(importance="low")})
+    out = render_outline(SEEDED_FILES, SEEDED_EDGES, 1200, tokens, areas=areas, focus={"lib/steps/src"},
+                         leaves=blocks_for("lib/steps/src/f0.py"))
+    assert "lib/steps/src/f0.py:" in out
+    assert "docs_site/pages/  30 files" in out and "docs_site/pages/f0.py" not in out
+
+
+def test_seeded_outline_never_exceeds_the_budget():
+    leaves = blocks_for(*(f for f in SEEDED_FILES if f.startswith("lib/steps")), size=40)
+    for budget in (300, 600, 1000, 2000, 5000):
+        out = render_outline(SEEDED_FILES, SEEDED_EDGES, budget, tokens, focus={"lib/steps/src"}, leaves=leaves)
+        assert tokens(out) <= budget, budget
+
+
+def test_seeded_trunk_share_decides_how_much_the_leaves_get():
+    seen = {}
+    for share in (0.1, 0.5):
+        def leaves(budget):
+            seen[share] = budget
+            return {}
+
+        render_outline(SEEDED_FILES, SEEDED_EDGES, 1500, tokens, settings=OutlineConfig(seeded_trunk_share=share),
+                       focus={"lib/steps/src"}, leaves=leaves)
+
+    assert seen[0.5] >= 1500 * 0.5                  # the trunk spends at most its share
+    assert seen[0.1] > seen[0.5]                    # a thinner trunk leaves more for signatures
+
+
+def test_seeded_dependencies_favor_edges_of_the_focused_area():
+    settings = OutlineConfig(max_edges=1)
+    plain = render_outline(SEEDED_FILES, SEEDED_EDGES, 3000, tokens, settings=settings)
+    seeded = render_outline(SEEDED_FILES, SEEDED_EDGES, 3000, tokens, settings=settings, focus={"lib/steps/src"},
+                            leaves=blocks_for())
+
+    assert "docs_site" in plain.split("Dependencies (strongest")[1]            # strongest edge overall
+    assert "lib/steps" in seeded.split("Dependencies (strongest")[1]           # but the focus area's edges come first
+    assert "red" in seeded.split("Dependencies (strongest")[1] and "docs_site" not in seeded.split("Dependencies (strongest")[1]
+
+
+def test_blocks_outside_the_focus_follow_the_trunk():
+    out = render_outline(SEEDED_FILES, SEEDED_EDGES, 3000, tokens, focus={"lib/steps/src"},
+                         leaves=blocks_for("lib/steps/src/f0.py", "api/src/f1.py"))
+    assert out.index("lib/steps/src/f0.py:") < out.index("api/src/f1.py:")
+    assert out.splitlines()[[line.strip() for line in out.splitlines()].index("api/src/f1.py:")].startswith("api/src/f1.py:")
+
+
+def test_unseeded_outline_is_unchanged():
+    assert render_outline(FILES, EDGES, 230, tokens) == render_outline(FILES, EDGES, 230, tokens, focus=None, leaves=None)

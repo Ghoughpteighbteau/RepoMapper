@@ -229,7 +229,7 @@ def test_core_importance_raises_unseeded_rank(tmp_path):
     assert tilted["alone.ts"] > plain["alone.ts"]
 
 
-def test_seeded_map_annotates_files_but_not_folders(tmp_path):
+def test_seeded_map_annotates_files_and_leaves_folder_notes_to_the_trunk(tmp_path):
     files = make_project(tmp_path, {**PROJECT, "old/legacy.ts": "export function oldHelper() { return helper(2); }\n"})
     (tmp_path / ".repomap").mkdir()
     (tmp_path / ".repomap" / "areas.toml").write_text(
@@ -240,7 +240,8 @@ def test_seeded_map_annotates_files_but_not_folders(tmp_path):
 
     assert "core.ts: [deprecated, replaced by used.ts] — old helpers\n" in map_string
     assert "old/legacy.ts: [legacy]\n" in map_string
-    assert "folder note" not in map_string
+    assert "legacy] — folder note\n" in map_string      # the trunk's directory line carries the folder's note...
+    assert "old/legacy.ts: [legacy]\n" in map_string    # ...the file's own line only its status
 
 
 def test_seeded_map_note_without_status_follows_the_colon(tmp_path):
@@ -493,3 +494,72 @@ def test_outline_lists_docs_matching_doc_globs(tmp_path):
     repomap.config.outline.doc_globs = ["NOTES.*"]
     out, _ = repomap.get_outline(files, 10_000)
     assert "[NOTES.txt]" in out and "README" not in out
+
+
+STEPS_PROJECT = {
+    "lib/steps/src/task.ts": "export class Task { run() { return 1; } }\nexport function makeTask() { return new Task(); }\n",
+    "lib/steps/src/queue.ts": "export class Queue { push() { return 1; } }\n",
+    "red/src/node.ts": "import { Task } from '../../lib/steps/src/task';\nexport function useTask() { return new Task(); }\n",
+    "api/src/route.ts": "import { Task } from '../../lib/steps/src/task';\nexport function route() { return new Task(); }\n",
+    "docs/guide/a.ts": "export function guideA() { return 1; }\n",
+    "docs/guide/b.ts": "export function guideB() { return 2; }\n",
+}
+
+
+def test_seeded_map_is_a_trunk_with_signatures_inside_it(tmp_path):
+    files = make_project(tmp_path, STEPS_PROJECT)
+    map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[files[0]], other_files=files[1:])
+
+    assert "Zoomed map" in map_string and "Rank value" in map_string
+    lines = map_string.splitlines()
+    assert any(line.strip() == "lib/steps/src/task.ts:" for line in lines)
+    assert "docs/guide/a.ts:" not in map_string                                           # no signatures outside the focus
+    assert "red/src/  1 file" in map_string                                               # one-line siblings
+    deps = map_string.split("Dependencies (strongest")[1]
+    assert "red" in deps and "api" in deps and "lib/steps" in deps                        # used by red and api
+    assert "red/src/node.ts -> lib/steps/src/" in deps and "api/src/route.ts -> lib/steps/src/" in deps   # import direction
+
+
+def test_directory_in_mentioned_files_opens_to_signatures(tmp_path):
+    files = make_project(tmp_path, STEPS_PROJECT)
+    map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[], other_files=files,
+                                                              mentioned_fnames={"lib/steps/src"})
+
+    assert "lib/steps/src/task.ts:" in map_string and "lib/steps/src/queue.ts:" in map_string
+    assert "class Queue" in map_string
+    assert "docs/guide/a.ts" not in map_string
+
+
+def test_directory_in_mentioned_files_may_be_absolute_or_have_a_trailing_slash(tmp_path):
+    files = make_project(tmp_path, STEPS_PROJECT)
+    for mention in (str(tmp_path / "lib/steps/src"), "lib/steps/src/"):
+        map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[], other_files=files,
+                                                                  mentioned_fnames={mention})
+        assert "lib/steps/src/queue.ts:" in map_string
+
+
+@pytest.mark.parametrize("tokens", [200, 400, 800, 2048])
+def test_seeded_map_stays_within_the_budget(tmp_path, tokens):
+    files = make_project(tmp_path, STEPS_PROJECT)
+    map_string, _ = make_repomap(tmp_path, tokens).get_repo_map(chat_files=[files[0]], other_files=files[1:])
+
+    assert count_tokens(map_string, "gpt-4") <= tokens
+
+
+def test_seeded_trunk_share_is_a_config_key(tmp_path):
+    from repomapper.config import Config, OutlineConfig
+    files = make_project(tmp_path, STEPS_PROJECT)
+    rm = make_repomap(tmp_path, 4096)
+    rm.config = Config(outline=OutlineConfig(seeded_trunk_share=0.9))
+    wide, _ = rm.get_repo_map(chat_files=[files[0]], other_files=files[1:])
+    narrow, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[files[0]], other_files=files[1:])
+
+    assert wide != narrow or count_tokens(wide, "gpt-4") < 4096
+
+
+def test_mentioned_identifier_opens_the_directory_that_defines_it(tmp_path):
+    files = make_project(tmp_path, STEPS_PROJECT)
+    map_string, _ = make_repomap(tmp_path, 4096).get_repo_map(chat_files=[], other_files=files,
+                                                              mentioned_idents={"makeTask"})
+
+    assert "lib/steps/src/task.ts:" in map_string and "lib/steps/src/queue.ts:" in map_string

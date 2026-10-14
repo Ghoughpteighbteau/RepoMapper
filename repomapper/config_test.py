@@ -78,3 +78,9 @@ def test_stale_tests_section_points_to_areas_globs(tmp_path):
     assert "'tests'" in config.warnings[0] and "areas.toml" in config.warnings[0]
     assert '[globs."..."]' in config.warnings[0] and 'kind = "test"' in config.warnings[0]
     assert config.stale_tests
+
+
+def test_seeded_trunk_share_is_configurable(tmp_path):
+    write_config(tmp_path, "[outline]\nseeded_trunk_share = 0.4\n")
+
+    assert load_config(str(tmp_path)).outline.seeded_trunk_share == 0.4

@@ -142,6 +142,13 @@ The tool prioritizes files in the following order:
 2.  `--mentioned-files`: These files are given a high priority, as they're explicitly mentioned in the current context.
 3.  `--other-files`: These files are given the lowest priority and are used to provide additional context.
 
+With any of `--chat-files`, `--mentioned-files` or `--mentioned-idents` the map is zoomed: the directory outline becomes a thin
+trunk (the path from the root to the seeded files, with every sibling directory folded to one line, plus the Dependencies between
+those areas, the seeded area's edges first) and the signatures of the seeded files' directories sit inside it, indented under their
+directory. A directory in `--mentioned-files` (MCP `mentioned_files`; a directory there is a focus, not a file) seeds every file under it and opens
+to signatures, the rest stays folded. Other highly ranked files that something refers to follow the trunk. The trunk starts at
+`outline.seeded_trunk_share` of the token budget (default 0.2); the way to the seeded files is always shown, so it can take more on deep paths.
+
 ### Advanced Options
 
 ```bash
