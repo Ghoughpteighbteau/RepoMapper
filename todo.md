@@ -43,10 +43,8 @@ see the 2026-10-14 entry in the worklog. Still open, biggest first:
 - Built: terse file/dir lines, language and test counts only on truncated dirs, 1% PageRank cutoff, merged
   near-single-child dirs, nameless files unlisted (see worklog). Unseeded outline ~4k tokens on `services` at
   `--map-tokens 4096`; the agent measured ~8k at the default budget.
-- MCP responses repeat the generic ignore-file hint on every call (what init created is reported once); send it
-  only when results look generated.
-- Dogfooding: in signature blocks (seeded maps), test files list every test function and big classes list every
-  method. Cap definitions per file, collapse test files to one line.
+- Seeded maps now cap defs per file, collapse test files and fold overloads (see worklog); the ignore hint is sent once per
+  server process or when paths look generated. The header text and stat syntax are still the open size items (priority 6).
 
 ## New tools: targeted lookups
 What an agent asks most is "who uses X?" and "what is this file?". Consider `callers(symbol)` returning
