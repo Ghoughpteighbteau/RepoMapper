@@ -1,10 +1,11 @@
 # TODO
 
 ## Priorities (value / effort estimate)
-Highest value per effort first. S = under an hour or two, M = half a day, L = a day or more.
+Highest value per effort first. S = under an hour or two, M = half a day, L = a day or more. `services` is the primary
+target (generic repos later). Next up: 1 (quality of the outline on `services`), then 2 (the render/search speedups).
 1. Outline leftovers from `services` feedback (S-M each): idle code expanded inside core areas, shared-types depth,
    sample noise (see "Outline leftovers").
-2. Performance, what is left (S-M each; see "Performance"): search is still ~2.4s per call.
+2. Performance, what is left (S-M each; see "Performance"): `render_outline` ~1.1s and search ~2.7s per call.
 3. Workspace packages with a non-`src` main (`@marathon/core-steps`) (S): `main`/`types`/`module` entries and
    build dirs mapped to `src/` are handled; check on `services` whether seeded `lib/steps/core` now shows
    "used by api/red" lines, and fix the entry resolution if not.
@@ -19,27 +20,25 @@ Highest value per effort first. S = under an hour or two, M = half a day, L = a 
    whether legacy code was edited by mistake (suggested by the `services` agent).
 
 ## Performance
-Track with `scripts/bench.py` (timing and output size, JSON in `bench/results/`, `--compare`); commit this repo's result
-files after perf or size changes.
-Built (see worklog): numpy edge arrays and own PageRank, persisted unseeded ranking and an MCP in-process memo,
-parallel parsing of tag-cache misses, a persisted base graph for seeded maps. `services` now: unseeded ~2.4s on a ranking-cache hit (~5.7s on a miss, first
-run each day), seeded ~2.0-2.4s on a base-graph hit, search ~2.4s, cold tags ~14s (was ~82s). Profile report with the numbers:
-see the 2026-10-14 entry in the worklog. Still open, biggest first:
-- A seeded or unseeded hit on `services` still spends ~1.1s in `render_outline` (`aggregate`, ~500k `areas.resolve` calls),
-  ~0.5s in `find_src_files`, ~0.3s in `outline_inputs`.
-- Output memo for the unseeded map keyed on the ranking key plus token limit (1.1s render left on a ranking hit).
-- `outline_inputs` still builds ~1.1M pair dicts for `render_outline`; pass arrays through.
-- `search_identifiers` ~2.4s per call: ~1.1s unpickling tags (compact or columnar tag store, name-table index),
+Track with `scripts/bench.py` (default target `services`; timing and output size, JSON in `bench/results/`, `--compare OLD NEW`).
+Re-run and commit a result file after perf or size changes. Baseline `2026-10-14-7a1b5f7-services-django.json`, `services`
+medians: unseeded 4.6s without caches / 1.7s on a hit, seeded 1.9-2.6s, search 2.7s, cold tags 13.2s (was ~82s).
+Built (see worklog): numpy edge arrays and own PageRank, persisted unseeded ranking (`ranking.v1`) and MCP memo, persisted
+base graph (`graph.v1`) for seeded maps, parallel parsing of tag-cache misses. Open, biggest first:
+- `render_outline` ~1.1s on a hit: `aggregate` plus ~500k `areas.resolve` calls (memoize per call, with path normalization
+  ~0.6s) and `outline_inputs` building ~1.1M pair dicts (pass the numpy arrays through, ~0.3s+0.15s). `find_src_files` ~0.5s.
+- `search_identifiers` ~2.7s per call: ~1.1s unpickling tags (compact or columnar tag store, name-table index),
   ~0.4s `Path.relative_to` per file, ~0.4s `find_src_files`; memoize across calls in the MCP server.
+- Output memo for the unseeded map keyed on the ranking key plus token limit.
 - Cold per-file cost: pygments `guess_lexer_for_filename` and the `line_starts` loop, compiled query reuse outside the
   pool (edits fingerprinted functions, so everyone goes cold once). A per-language fingerprint would stop edits to one
   query invalidating every file.
-- Small: memoize `areas.resolve` (463k calls) and path normalization (~0.6s).
 - Not pursued: disabling or freezing the garbage collector (~1.5s), the user is wary of it.
 - Known gaps in the caches: the ranking key has no shallow-to-full clone state; unseeded ranks on a hit can be up to a day
   old (key includes the date); `ranked_tags_of` parses serially if the tags cache is cold but `ranking.v1` hits; tie order
   can differ between a fresh build and a cached one (set order); a seeded call whose chat file is outside the listed
   files keys on the union, so alternating such calls thrashes the graph cache.
+- Bench gaps: MCP memo repeat calls aren't measured; the `services` search name `Task` saturates `max_results`.
 
 ## Output size and token efficiency
 - Built: terse file/dir lines, language and test counts only on truncated dirs, 1% PageRank cutoff, merged
