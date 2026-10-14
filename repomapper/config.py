@@ -62,6 +62,7 @@ class RankingConfig:
     chat_file_personalization: float = 100.0
     mentioned_file_personalization: float = 10.0
     chat_file_ref_weight: float = 50.0
+    import_weight: float = 10.0
     core_importance: float = 4.0
     low_importance: float = 0.25
     identifier_weight: IdentifierWeightConfig = field(default_factory=IdentifierWeightConfig)
@@ -81,6 +82,9 @@ class OutlineConfig:
     short_name_penalty: float = 0.3
     active_commits: int = 10          # a directory with this many commits in 90 days counts as fully active
     idle_activity: float = 0.25       # activity factor of a directory with no recent commits (1 = ignore activity)
+    # Multiplier for shared-name edges between two JS/TS files in the Dependencies section; imports give those edges, so
+    # names alone (`Account`, `get`) link unrelated apps. 0 drops them, 1 keeps them as before.
+    shared_name_edge_weight: float = 0.0
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
     generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"])
 

@@ -243,6 +243,7 @@ def render_outline(
     recent_commits: Callable[[str], Optional[int]] = lambda path: 0,
     weights: IdentifierWeightConfig = IdentifierWeightConfig(),
     plain_files: List[str] = (),
+    import_edges: Dict[Tuple[str, str], float] = {},
 ) -> Optional[str]:
     """Render the outline, splitting max_tokens top-down among directories by size and importance."""
     if not files:
@@ -409,38 +410,52 @@ def render_outline(
         """(a, b, both ways) for the strongest edges; a reverse pair is one entry, ordered by its stronger
         direction, and a directory's edges with nodes inside it (files directly in it vs a listed one) are dropped.
         Edges touching legacy or deprecated files are dropped. An edge between two parts of one top-level area is
-        internal: dropped unless nothing crosses areas. Crossing edges end at the area, not at a folder inside it."""
-        weights: Dict[Tuple[str, str], float] = defaultdict(float)
-        internal: Dict[Tuple[str, str], float] = defaultdict(float)
+        internal: dropped unless nothing crosses areas. Crossing edges end at the area, not at a folder inside it.
+        A pair with import edges takes its direction from them alone (`a -> b` when only a imports b); the shared-name
+        edges still add to its strength, and decide direction for pairs with no imports."""
         nodes: Dict[str, str] = {}
-        for (src, dst), w in edges.items():
-            if src in kinds or dst in kinds:
-                continue
-            if any(areas.resolve(rel).status in ("legacy", "deprecated") for rel in (src, dst)):
-                continue
-            for rel in (src, dst):
-                if rel not in nodes:
-                    nodes[rel] = node_of(rel, open_dirs)
-            a, b = nodes[src], nodes[dst]
-            if a == b or contains(a, b) or contains(b, a):
-                continue
-            area_a, area_b = area_of(src), area_of(dst)
-            if area_a and area_a == area_b:
-                internal[(a, b)] += w
-                continue
-            a, b = in_area(a, area_a), in_area(b, area_b)
-            if a != b:
-                weights[(a, b)] += w
-        weights = weights or internal
+
+        def aggregate(source: Dict[Tuple[str, str], float]):
+            crossing: Dict[Tuple[str, str], float] = defaultdict(float)
+            internal: Dict[Tuple[str, str], float] = defaultdict(float)
+            for (src, dst), w in source.items():
+                if src in kinds or dst in kinds:
+                    continue
+                if any(areas.resolve(rel).status in ("legacy", "deprecated") for rel in (src, dst)):
+                    continue
+                for rel in (src, dst):
+                    if rel not in nodes:
+                        nodes[rel] = node_of(rel, open_dirs)
+                a, b = nodes[src], nodes[dst]
+                if a == b or contains(a, b) or contains(b, a):
+                    continue
+                area_a, area_b = area_of(src), area_of(dst)
+                if area_a and area_a == area_b:
+                    internal[(a, b)] += w
+                    continue
+                a, b = in_area(a, area_a), in_area(b, area_b)
+                if a != b:
+                    crossing[(a, b)] += w
+            return crossing, internal
+
+        named, named_internal = aggregate(edges)
+        imported, imported_internal = aggregate(import_edges)
+        if named or imported:
+            named, imported = dict(named), dict(imported)
+        else:
+            named, imported = dict(named_internal), dict(imported_internal)
         merged: Dict[frozenset, Tuple[float, str, str, bool]] = {}
-        for (a, b), w in weights.items():
-            key = frozenset((a, b))
+        for pair in {*named, *imported}:
+            key = frozenset(pair)
             if key in merged:
-                total, a0, b0, _both = merged[key]
-                first = (a0, b0) if weights[(a0, b0)] >= w else (a, b)
-                merged[key] = (total + w, *first, True)
-            else:
-                merged[key] = (w, a, b, False)
+                continue
+            a, b = pair
+            both_ways = [(a, b), (b, a)]
+            total = sum(named.get(p, 0.0) + imported.get(p, 0.0) for p in both_ways)
+            direction = imported if any(p in imported for p in both_ways) else named
+            present = [p for p in both_ways if p in direction]
+            first = max(present, key=lambda p: (direction[p], p == pair))
+            merged[key] = (total, *first, len(present) == 2)
         ranked = sorted(merged.values(), key=lambda m: m[0], reverse=True)[:max_edges]
         return [(a, b, both) for _w, a, b, both in ranked]
 

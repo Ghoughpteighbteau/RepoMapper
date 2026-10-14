@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from repomapper import repomap_class
-from repomapper.config import IdentifierWeightConfig
+from repomapper.config import IdentifierWeightConfig, RankingConfig
 from repomapper.repomap_class import RepoMap, identifier_weight
 from repomapper.utils import count_tokens, read_text
 
@@ -406,3 +406,79 @@ def test_outline_shows_directories_of_unparseable_files(tmp_path):
 
     assert "flyway/  3 files (sql 3) — Flyway migrations" in out
     assert "V1__a.sql" not in out and "github" not in out
+
+
+def test_imports_are_tagged_for_js_and_ts_only(tmp_path):
+    make_project(tmp_path, {"a.ts": "import { x } from './b';\nconst y = require('./c');\n", "a.py": "import b\n"})
+    rm = make_repomap(tmp_path)
+
+    assert [(t.name, t.line) for t in rm.get_tags(str(tmp_path / "a.ts"), "a.ts") if t.kind == "import"] == [
+        ("./b", 1), ("./c", 2)]
+    assert not [t for t in rm.get_tags(str(tmp_path / "a.py"), "a.py") if t.kind == "import"]
+
+
+def test_relative_import_links_files_with_no_shared_names(tmp_path):
+    files = make_project(tmp_path, {
+        "app/main.ts": "import './setup';\nimport { onlyHere } from '../lib/util';\nexport const m = 1;\n",
+        "lib/util.ts": "export const zz = 1;\n",
+        "app/setup.ts": "export const qq = 2;\n",
+    })
+    graph = make_repomap(tmp_path).build_ranking([], files).graph
+
+    assert graph.has_edge("app/main.ts", "lib/util.ts")
+    assert graph.has_edge("app/main.ts", "app/setup.ts")
+    assert not graph.has_edge("lib/util.ts", "app/main.ts")
+    data = graph.get_edge_data("app/main.ts", "lib/util.ts")
+    assert [d["weight"] for d in data.values()] == [RankingConfig().import_weight]
+
+
+def test_workspace_package_import_follows_a_barrel_to_its_files(tmp_path):
+    files = make_project(tmp_path, {
+        "lib/types/package.json": '{"name": "@acme/types", "main": "./dist/index.js"}',
+        "lib/types/src/index.ts": "export * from './user';\nexport * from './task';\n",
+        "lib/types/src/user.ts": "export interface User { a: string }\n",
+        "lib/types/src/task.ts": "export interface Task { b: string }\n",
+        "ui/app.ts": "import { User } from '@acme/types';\nexport const q = 1;\n",
+    })
+    rm = make_repomap(tmp_path)
+    mapped = [f for f in files if not f.endswith("index.ts")]   # barrels are auto-ignored, so they are not in the map
+    graph = rm.build_ranking([], mapped).graph
+
+    assert graph.has_edge("ui/app.ts", "lib/types/src/user.ts")
+    assert graph.has_edge("ui/app.ts", "lib/types/src/task.ts")
+    assert not graph.has_edge("ui/app.ts", "lib/types/src/index.ts")
+
+
+def test_import_weight_is_configurable_and_zero_disables_it(tmp_path):
+    from repomapper.config import Config
+    files = make_project(tmp_path, {"a.ts": "import './b';\nexport const q = 1;\n", "b.ts": "export const w = 1;\n"})
+    rm = make_repomap(tmp_path)
+    rm.config = Config(ranking=RankingConfig(import_weight=7.0))
+    assert [d["weight"] for d in rm.build_ranking([], files).graph.get_edge_data("a.ts", "b.ts").values()] == [7.0]
+    rm.config = Config(ranking=RankingConfig(import_weight=0.0))
+    assert not rm.build_ranking([], files).graph.has_edge("a.ts", "b.ts")
+
+
+def test_imports_raise_the_rank_of_what_a_chat_file_imports(tmp_path):
+    files = make_project(tmp_path, {"a.ts": "import './b';\nexport const q = 1;\n", "b.ts": "export const w = 1;\n",
+                                    "c.ts": "export const e = 1;\n"})
+    ranking = make_repomap(tmp_path).build_ranking([files[0]], files[1:])
+
+    assert ranking.file_ranks["b.ts"] > ranking.file_ranks["c.ts"]
+    assert not ranking.ident_ranks.get(("b.ts", None))   # import edges carry no identifier rank
+
+
+def test_outline_shows_import_direction_and_drops_shared_name_edges_between_js_files(tmp_path):
+    files = make_project(tmp_path, {
+        "ui/src/page.ts": "import { Model } from '../../lib/src/model';\nexport function renderPage() { return Model; }\n",
+        "lib/src/model.ts": "export class Model {}\nexport function renderPage2() { return renderPage(); }\n",
+        "api/src/route.ts": "export function renderPage() {}\nexport function handle() {}\n",
+        "ui/src/other.ts": "export function other() {}\n",
+        "lib/src/other.ts": "export function other2() {}\n",
+        "api/src/other.ts": "export function other3() { return handle(); }\n",
+    })
+    out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
+    deps = out.split("Dependencies")[1]
+
+    assert "ui/src/page.ts -> lib/src/model.ts" in deps
+    assert "<->" not in deps and "api/src" not in deps

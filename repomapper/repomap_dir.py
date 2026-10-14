@@ -105,6 +105,7 @@ CONFIG_TEMPLATE = """\
 # chat_file_personalization = 100.0     # PageRank seed for files in the chat
 # mentioned_file_personalization = 10.0 # PageRank seed for mentioned files
 # chat_file_ref_weight = 50.0           # edge multiplier for references made from chat files
+# import_weight = 10.0                  # edge weight of one JS/TS import, importer -> imported file (0 = ignore imports)
 # core_importance = 4.0                 # rank multiplier for files in core areas, after PageRank, when nothing is seeded (normal is 1)
 # low_importance = 0.25                 # rank multiplier for files in low areas, after PageRank, when nothing is seeded
 
@@ -135,6 +136,7 @@ CONFIG_TEMPLATE = """\
 # short_name_penalty = 0.3      # ...score this much lower (names defined in many files also lose, see [ranking.identifier_weight])
 # active_commits = 10          # the outline opens active directories first: this many commits in 90 days is fully active...
 # idle_activity = 0.25         # ...and a directory with none scores this much (1 turns the activity tilt off; it also orders subdirectories)
+# shared_name_edge_weight = 0.0 # Dependencies: multiplier for edges between two JS/TS files that come only from shared names (0 drops them; imports give the real ones)
 # Builtin and everyday method names (push, set, id, log) are never sample names:
 # generic_names = ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"]
 

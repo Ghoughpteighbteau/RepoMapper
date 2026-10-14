@@ -509,3 +509,25 @@ def test_shallow_directories_open_before_deeper_ones():
     out = render_outline(files, {}, 400, tokens)
     assert out.count(" 10 files (py 10)") == 4      # both m/ and n/ list their subdirectories...
     assert "f0.py" not in out                       # ...before either opens one of them down to files
+
+
+def test_import_edges_give_direction_where_shared_names_point_both_ways():
+    names = {("ui/app.ts", "lib/types/user.ts"): 3.0, ("lib/types/user.ts", "ui/app.ts"): 1.0}
+    out = render_outline(FILES, names, 10_000, tokens, import_edges={("ui/app.ts", "lib/types/user.ts"): 1.0})
+    assert "ui/app.ts -> lib/types/user.ts" in out
+    assert "<->" not in out
+
+
+def test_pairs_without_imports_keep_the_direction_of_shared_names():
+    names = {("ui/app.ts", "lib/types/user.ts"): 3.0, ("lib/types/user.ts", "ui/app.ts"): 1.0,
+             ("front_end/legacy.js", "lib/types/task.ts"): 2.0, ("lib/types/task.ts", "front_end/legacy.js"): 1.0}
+    out = render_outline(FILES, names, 10_000, tokens, import_edges={("ui/app.ts", "lib/types/user.ts"): 1.0})
+    assert "front_end/legacy.js <-> lib/types/task.ts" in out
+    assert "ui/app.ts -> lib/types/user.ts" in out
+
+
+def test_imports_both_ways_stay_a_double_arrow_and_imports_alone_make_a_line():
+    both = {("ui/app.ts", "lib/types/user.ts"): 2.0, ("lib/types/user.ts", "ui/app.ts"): 1.0}
+    assert "ui/app.ts <-> lib/types/user.ts" in render_outline(FILES, {}, 10_000, tokens, import_edges=both)
+    one_way = {("ui/app.ts", "lib/types/user.ts"): 1.0}
+    assert "ui/app.ts -> lib/types/user.ts" in render_outline(FILES, {}, 10_000, tokens, import_edges=one_way)

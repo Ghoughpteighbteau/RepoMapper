@@ -30,6 +30,7 @@ from repomapper.importance import filter_important_files
 from repomapper.outline import OutlineFile, render_outline
 from repomapper.config import Config, IdentifierWeightConfig, identifier_weight, load_config
 from repomapper.areas import Area, Areas, annotation, load_areas
+from repomapper.imports import IMPORT_RE, ImportResolver, extract_imports, load_packages
 from repomapper.history import History, activity_factors, read_history
 
 
@@ -78,8 +79,9 @@ def extractor_fingerprint() -> str:
     for scm in sorted((Path(__file__).parent / "queries").rglob("*.scm")):
         h.update(str(scm.relative_to(Path(__file__).parent)).encode())
         h.update(scm.read_bytes())
-    for fn in (RepoMap.get_tags_raw, RepoMap.get_pygments_refs, get_scm_fname):
+    for fn in (RepoMap.get_tags_raw, RepoMap.get_pygments_refs, get_scm_fname, extract_imports):
         h.update(inspect.getsource(fn).encode())
+    h.update(IMPORT_RE.pattern.encode())
     for pkg in EXTRACTOR_PACKAGES:
         try:
             h.update(f"{pkg}={importlib.metadata.version(pkg)}".encode())
@@ -99,6 +101,8 @@ Tag = namedtuple("Tag", "rel_fname fname line name kind".split())
 # Class-like definitions (class, interface, type, enum...) also get a tag of kind "type", so the outline prefers them
 # as sample names over methods and fields.
 TYPE_DEFINITION_KINDS = ("class", "type", "interface", "enum", "union", "object", "mixin", "alias")
+# JS/TS files also get a tag of kind "import" per module specifier (name = the specifier), for import edges.
+IMPORT_LANGUAGES = ("javascript", "typescript", "tsx")
 FUNCTION_NODE_WORDS = ("function", "method", "lambda", "closure")
 
 
@@ -240,11 +244,21 @@ class RepoMap:
     
     def get_rel_fname(self, fname: str) -> str:
         """Get relative filename from absolute path."""
+        prefix = str(self.root) + os.sep
+        if fname.startswith(prefix) and "/./" not in fname and "//" not in fname and ".." not in fname:
+            return fname[len(prefix):]   # fast path: pathlib's relative_to dominated large repos
         try:
             return str(Path(fname).relative_to(self.root))
         except ValueError:
             return fname
     
+    def read_disk_text(self, rel_fname: str) -> Optional[str]:
+        """Text of a file under the root (also ones the map leaves out, like barrels), None if it can't be read."""
+        try:
+            return (self.root / rel_fname).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
     def get_file_stamp(self, fname: str) -> Optional[Tuple[int, int]]:
         """(mtime_ns, size) of a file; a change in either means its cached tags are stale."""
         try:
@@ -380,6 +394,9 @@ class RepoMap:
                 if (tag.name, tag.line) not in seen
             )
 
+            if lang in IMPORT_LANGUAGES:
+                tags.extend(Tag(rel_fname, fname, line, spec, "import") for spec, line in extract_imports(code))
+
             return tags
             
         except Exception as e:
@@ -482,6 +499,7 @@ class RepoMap:
         nested: Dict[str, Counter] = defaultdict(Counter)
         types: Dict[str, Set[str]] = defaultdict(set)
         def_counts: Counter = Counter()
+        imports: Dict[str, List[str]] = defaultdict(list)   # rel_fname -> module specifiers
         
         personalization = {}
         chat_rel_fnames = set(self.get_rel_fname(f) for f in chat_fnames)
@@ -489,6 +507,7 @@ class RepoMap:
         all_fnames = list(set(chat_fnames + other_fnames))
         parseable_files = sum(1 for fname in all_fnames if is_parseable(fname))
         
+        included_rel: Set[str] = set()
         for fname in all_fnames:
             rel_fname = self.get_rel_fname(fname)
             
@@ -499,6 +518,7 @@ class RepoMap:
                 continue
                 
             included.append(fname)
+            included_rel.add(rel_fname)
             
             tags = self.get_tags(fname, rel_fname, force_refresh)
             
@@ -515,6 +535,8 @@ class RepoMap:
                     nested[rel_fname][tag.name] += 1
                 elif tag.kind == "type":
                     types[rel_fname].add(tag.name)
+                elif tag.kind == "import":
+                    imports[rel_fname].append(tag.name)
             
             # Seed PageRank from chat files and, more weakly, mentioned files
             if fname in chat_fnames:
@@ -546,6 +568,26 @@ class RepoMap:
                     if ref_fname != def_fname and file_family[ref_fname] == file_family[def_fname]:
                         G.add_edge(ref_fname, def_fname, weight=weight, name=name)
         
+        # Import edges, importer -> imported file(s); a barrel import shares one import's weight among its files
+        if imports and ranking_config.import_weight > 0:
+            rel_files = included_rel
+            resolver = ImportResolver(rel_files, self.read_disk_text, load_packages(str(self.root), rel_files))
+            for rel_fname, specs in imports.items():
+                targets: Dict[str, int] = Counter()
+                for spec in specs:
+                    found = [t for t in resolver.resolve(rel_fname, spec) if t != rel_fname and t in rel_files]
+                    for target in found:
+                        targets[target] += 1
+                    # a barrel's files split the import's weight; a repeated import counts once
+                    if len(found) > 1:
+                        for target in found:
+                            targets[target] -= 1 - 1 / len(found)
+                for target, share in targets.items():
+                    weight = ranking_config.import_weight * min(share, 1.0)
+                    if rel_fname in chat_rel_fnames:
+                        weight *= ranking_config.chat_file_ref_weight
+                    G.add_edge(rel_fname, target, weight=weight, name=None, kind="import")
+
         if not G.nodes():
             report = FileReport(excluded, total_definitions, total_references, len(all_fnames),
                                 dict(self.parse_errors), parseable_files=parseable_files)
@@ -583,6 +625,8 @@ class RepoMap:
             out_edges = G.out_edges(src, data=True)
             total_weight = sum(data["weight"] for _, _, data in out_edges)
             for _, dst, data in out_edges:
+                if data["name"] is None:
+                    continue   # an import edge: the file gets the rank, no definition does
                 ident_ranks[(dst, data["name"])] += ranks.get(src, 0.0) * data["weight"] / total_weight
 
         # Unseeded: scale each file's rank and its definitions' by its areas.toml importance, renormalized
@@ -647,9 +691,19 @@ class RepoMap:
             f.rank /= total_rank
 
         edges: Dict[Tuple[str, str], float] = defaultdict(float)
+        import_edges: Dict[Tuple[str, str], float] = defaultdict(float)
+        from grep_ast import filename_to_lang
+        # Shared names between JS/TS files are mostly coincidence (separate apps share `Account`, `get`); imports decide
+        name_scale = self.config.outline.shared_name_edge_weight
+        js_files = {rel for rel in files if filename_to_lang(rel) in IMPORT_LANGUAGES}
         for src, dst, data in ranking.graph.edges(data=True):
             if src in files and dst in files:
-                edges[(src, dst)] += data["weight"]
+                if data.get("kind") == "import":
+                    import_edges[(src, dst)] += data["weight"]
+                else:
+                    scale = name_scale if src in js_files and dst in js_files else 1.0
+                    if scale > 0:
+                        edges[(src, dst)] += data["weight"] * scale
 
         def docs(rel_dir: str) -> List[str]:
             try:
@@ -665,7 +719,7 @@ class RepoMap:
         importance = {"core": ranking_config.core_importance, "normal": 1.0, "low": ranking_config.low_importance}
         return render_outline(files, edges, max_tokens, self.token_count, docs, self.config.outline, self.areas,
                               activity, importance, recent_commits,
-                              ranking_config.identifier_weight, plain_files), ranking.report
+                              ranking_config.identifier_weight, plain_files, import_edges), ranking.report
 
     def render_tree(self, abs_fname: str, rel_fname: str, lois: List[int]) -> str:
         """Render a code snippet with specific lines of interest."""
