@@ -12,7 +12,7 @@ from repomapper.repomap_class import RepoMap
 from repomapper.utils import count_tokens, read_text, find_src_files, find_git_root
 from repomapper.repomap_dir import init_repomap_dir
 from repomapper.config import load_config
-from repomapper.areas import load_areas, moved_tests_hint, stale_entries
+from repomapper.areas import TEST_GLOBS, Areas, glob_regex, load_areas, moved_tests_hint, stale_entries
 from repomapper.scm import get_scm_fname
 from repomapper.importance import filter_important_files
 
@@ -247,6 +247,14 @@ def truncate_lines(text: str, max_length: int) -> str:
     )
 
 
+def test_file_checker(areas: Areas):
+    """Predicate for test files: areas.toml kind = "test" when it sets any, else the starter test globs."""
+    if any(a.kind == "test" for a in [*areas.entries.values(), *areas.globs.values()]):
+        return lambda rel: areas.resolve(rel).kind == "test"
+    regexes = [glob_regex(g) for g in TEST_GLOBS]
+    return lambda rel: any(r.match(rel) for r in regexes)
+
+
 @mcp.tool()
 async def search_identifiers(
     query: str,
@@ -256,6 +264,10 @@ async def search_identifiers(
     include_references: bool = True
 ) -> Dict[str, Any]:
     """Search for identifiers in code files. Get back a list of matching identifiers with their file, line number, and context.
+       Results are sorted exact matches first, then definitions, then references by file and line with test
+       files last. Hits on nearby lines share one result (`line` is the first, `lines` lists all, `names` lists
+       differing names). `exact` (true/false) is only present when some hits are substring matches (e.g.
+       `get_tags_raw` for `get_tags`).
        When searching, just use the identifier name without any special characters, prefixes or suffixes. The search is 
        case-insensitive. Files matching .gitignore or .repomap/ignore are skipped; if hits come from vendored,
        minified or generated files, suggest adding them to .repomap/ignore.
@@ -302,47 +314,58 @@ async def search_identifiers(
             tags = repo_map.get_tags(file_path, rel_path)
             all_tags.extend(tags)
 
-        # Filter tags based on search query and options
-        matching_tags = []
+        # Filter tags based on search query and options. Pygments refs also fire on definition sites,
+        # so a ref at the same name and line as a definition is dropped.
         query_lower = query.lower()
-        
-        for tag in all_tags:
-            if query_lower in tag.name.lower():
-                if (tag.kind == "def" and include_definitions) or \
-                   (tag.kind == "ref" and include_references):
-                    matching_tags.append(tag)
+        defined = {(t.rel_fname, t.line, t.name) for t in all_tags if t.kind == "def"}
+        matching_tags = [
+            tag for tag in all_tags
+            if query_lower in tag.name.lower()
+            and ((tag.kind == "def" and include_definitions)
+                 or (tag.kind == "ref" and include_references and (tag.rel_fname, tag.line, tag.name) not in defined))
+        ]
 
-        # Sort by relevance (definitions first, then references)
-        matching_tags.sort(key=lambda x: (x.kind != "def", x.name.lower().find(query_lower)))
-
-        # Limit results
+        # Exact matches first, then definitions, then non-test files, then file and line
+        is_test = test_file_checker(areas)
+        matching_tags.sort(key=lambda t: (t.name.lower() != query_lower, t.kind != "def", is_test(t.rel_fname),
+                                          t.rel_fname, t.line))
         matching_tags = matching_tags[:max_results]
 
-        # Format results with context
-        results = []
+        # Hits whose context windows touch share one block, placed where its best hit ranks
+        blocks = []
         for tag in matching_tags:
-            file_path = str(Path(project_root) / tag.rel_fname)
-            
-            # Calculate context range based on context_lines parameter
-            start_line = max(1, tag.line - context_lines)
-            end_line = tag.line + context_lines
-            context_range = list(range(start_line, end_line + 1))
-            
-            context = repo_map.render_tree(
-                file_path,
-                tag.rel_fname,
-                context_range
-            )
-            
+            for block in blocks:
+                if block[0].rel_fname == tag.rel_fname and any(
+                        abs(tag.line - other.line) <= 2 * context_lines + 1 for other in block):
+                    block.append(tag)
+                    break
+            else:
+                blocks.append([tag])
+
+        results = []
+        for block in blocks:
+            block.sort(key=lambda t: t.line)
+            first = block[0]
+            lois = sorted({n for t in block
+                           for n in range(max(1, t.line - context_lines), t.line + context_lines + 1)})
+            context = repo_map.render_tree(str(Path(project_root) / first.rel_fname), first.rel_fname, lois)
             if context:
-                context = truncate_lines(context, config.search.max_context_line_length)
-                results.append({
-                    "file": tag.rel_fname,
-                    "line": tag.line,
-                    "name": tag.name,
-                    "kind": tag.kind,
-                    "context": context
-                })
+                result = {
+                    "file": first.rel_fname,
+                    "line": first.line,
+                    "name": first.name,
+                    "kind": "def" if any(t.kind == "def" for t in block) else "ref",
+                    "exact": any(t.name.lower() == query_lower for t in block),
+                    "context": truncate_lines(context, config.search.max_context_line_length),
+                }
+                if len(block) > 1:
+                    result["lines"] = [t.line for t in block]
+                if len({t.name for t in block}) > 1:
+                    result["names"] = sorted({t.name for t in block})
+                results.append(result)
+        if all(r["exact"] for r in results):
+            for r in results:
+                del r["exact"]
 
         response = {"results": results, "hint": hint}
         errors = parse_error_summary(repo_map.parse_errors, project_root)

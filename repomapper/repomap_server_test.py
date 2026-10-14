@@ -79,3 +79,64 @@ def test_search_reports_config_warnings(tmp_path):
     assert search(query="interleave")["config_warnings"] == [
         ".repomap/config.toml: unknown key 'search.max_context_lines'"
     ]
+
+
+def hits(result):
+    return [(r["file"], r["line"]) for r in result["results"]]
+
+
+def test_search_definition_is_not_repeated_as_reference(tmp_path):
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n\n\n\n\n\n\n\n\n\ninterleave();\n")
+
+    results = search(query="interleave", context_lines=0)["results"]
+
+    assert [(r["line"], r["kind"]) for r in results] == [(1, "def"), (11, "ref")]
+
+
+def test_search_merges_adjacent_hits_into_one_block(tmp_path):
+    body = "\n".join(f"  const x{i} = interleave(a);" for i in range(3))
+    padding = "\n".join(f"const v{i} = {i};" for i in range(30))
+    (tmp_path / "a.ts").write_text(f"function f(a) {{\n{body}\n}}\n{padding}\nfunction g(a) {{ return interleave(a); }}\n")
+
+    results = search(query="interleave", context_lines=1)["results"]
+
+    assert [r["line"] for r in results] == [2, 36]
+    assert results[0]["lines"] == [2, 3, 4]
+    assert "lines" not in results[1]
+    assert all(f"x{i}" in results[0]["context"] for i in range(3))
+
+
+def test_search_exact_matches_come_before_substring_matches(tmp_path):
+    (tmp_path / "a.py").write_text("def get_tags_raw():\n    pass\n\n\ndef get_tags():\n    pass\n")
+
+    results = search(query="get_tags", context_lines=0)["results"]
+
+    assert [r["name"] for r in results] == ["get_tags", "get_tags_raw"]
+    assert [r["exact"] for r in results] == [True, False]
+
+
+def test_search_exact_flag_is_left_out_when_all_hits_are_exact(tmp_path):
+    (tmp_path / "a.py").write_text("def get_tags():\n    pass\n")
+
+    assert "exact" not in search(query="get_tags")["results"][0]
+
+
+def test_search_orders_references_by_file_and_line_with_tests_last(tmp_path):
+    (tmp_path / "z.py").write_text("def use():\n    interleave()\n")
+    (tmp_path / "a_test.py").write_text("def check():\n    interleave()\n")
+    (tmp_path / "b.py").write_text("\n\n\n\n\n\n\n\ninterleave()\n\n\ninterleave()\n")
+    (tmp_path / "lib.py").write_text("def interleave():\n    pass\n")
+
+    results = search(query="interleave", context_lines=0)["results"]
+
+    assert hits({"results": results}) == [("lib.py", 1), ("b.py", 9), ("b.py", 12), ("z.py", 2), ("a_test.py", 2)]
+
+
+def test_search_uses_areas_toml_test_kinds(tmp_path):
+    (tmp_path / ".repomap").mkdir()
+    (tmp_path / ".repomap" / "areas.toml").write_text('[paths."checks"]\nkind = "test"\n')
+    (tmp_path / "checks").mkdir()
+    (tmp_path / "checks" / "a.py").write_text("def check():\n    interleave()\n")
+    (tmp_path / "z.py").write_text("def use():\n    interleave()\n")
+
+    assert hits(search(query="interleave", context_lines=0)) == [("z.py", 2), ("checks/a.py", 2)]
