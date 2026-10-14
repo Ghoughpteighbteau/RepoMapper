@@ -134,6 +134,8 @@ CONFIG_TEMPLATE = """\
 # max_langs = 3
 # max_edges = 12
 # common_name_dirs = 5         # names defined in more directories than this (ngOnInit, value) aren't sample names
+# common_name_files = 12       # names defined in more files than this aren't sample names
+# sibling_name_files = 3       # names defined by more files of one directory than this aren't sample names there (Change, Options in every file of freight/)
 # type_boost = 3.0             # sample names: classes, interfaces, types and enums score this much higher
 # short_name_length = 6        # sample names shorter than this...
 # short_name_penalty = 0.3      # ...score this much lower (names defined in many files also lose, see [ranking.identifier_weight])
@@ -143,8 +145,8 @@ CONFIG_TEMPLATE = """\
 # seeded_trunk_share = 0.2     # seeded maps: share of the token budget for the trunk (path to the focused files, folded siblings, Dependencies); the rest is signatures
 # merge_dir_share = 0.95      # a directory whose biggest subdirectory holds this share of its files merges with it into one line (above 1: only empty pass-through directories); files outside show as "(+N files outside)"
 # doc_globs = ["README*", "CLAUDE.md", "*.README.md"]  # doc files listed after each directory in the outline (file-name globs, case-insensitive)
-# Builtin and everyday method names (push, set, id, log) are never sample names:
-# generic_names = ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"]
+# Builtin and everyday names (push, set, id, log, message, options; any case) are never sample names:
+# generic_names = ["all", "add", "array", "describe", "error", "get", "change", "forEach", "has", "id", "key", "keys", "length", "log", "main", "message", "name", "object", "options", "pop", "push", "remove", "report", "run", "set", "stack", "toString", "type", "update", "value", "values", "version"]
 
 [search]
 # max_context_line_length = 200

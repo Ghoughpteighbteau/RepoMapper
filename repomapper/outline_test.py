@@ -205,18 +205,62 @@ def test_names_defined_in_many_directories_are_not_samples():
     assert "ngOnInit" in kept
 
 
-def test_file_without_definitions_is_a_plain_line():
-    files = {"ops/docker-bake.hcl": OutlineFile(0.4, []), "ops/run.py": OutlineFile(0.6, [(0.6, "run")])}
+def test_file_without_definitions_gets_no_line_and_counts_as_more_files():
+    files = {"ops/docker-bake.hcl": OutlineFile(0.4, []), "ops/deploy.py": OutlineFile(0.6, [(0.6, "Deployer")])}
     out = render_outline(files, {}, 10_000, tokens)
-    assert out.endswith("\n  docker-bake.hcl 40.0%")
+    assert "docker-bake" not in out
+    assert "deploy.py 60.0%: Deployer" in out
+    assert out.endswith("\n  +1 more files")
+
+
+def test_directory_of_nameless_files_has_counts_only():
+    files = {**{f"api/domain/x{i}.api.ts": OutlineFile(0.1, []) for i in range(3)}, "api/main.ts": OutlineFile(0.1, [(0.1, "Server")])}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert ".api.ts" not in out
+    assert "domain/  3 files" in out
+    lines = out.splitlines()
+    i = next(i for i, line in enumerate(lines) if line.lstrip().startswith("domain/"))
+    assert not any(line.startswith("      ") for line in lines[i + 1:i + 2])
+
+
+def test_nameless_files_do_not_cost_budget():
+    named = {f"pkg/n{i}.ts": OutlineFile(0.1, [(0.1, f"Thing{i}")]) for i in range(3)}
+    bare = {f"pkg/b{i}.ts": OutlineFile(0.1, []) for i in range(30)}
+    out = render_outline({**named, **bare}, {}, 10_000, tokens)
+    assert out.count("\n") == render_outline(named, {}, 10_000, tokens).count("\n") + 1   # one "+30 more files" line
+    assert "+30 more files" in out
+
+
+def test_names_defined_in_many_files_are_not_samples():
+    files = {f"a{i}/f.ts": OutlineFile(0.1, [(0.09, "Shape"), (0.01, f"Own{i}")]) for i in range(4)}
+    out = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(common_name_files=3))
+    assert "Shape" not in out and "f.ts 10.0%: Own0" in out
+    assert "Shape" in render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(common_name_files=4))
+
+
+def test_names_repeated_by_sibling_files_are_not_samples():
+    files = {f"freight/f{i}.ts": OutlineFile(0.1, [(0.09, "Change"), (0.08, "Options"), (0.01, f"Mode{i}")]) for i in range(4)}
+    files["other/g.ts"] = OutlineFile(0.1, [(0.1, "Change")])
+    out = render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(generic_names=[], sibling_name_files=3))
+    assert "freight/" in out
+    freight = out[out.index("freight/"):]
+    assert "Options" not in freight and "f0.ts 10.0%: Mode0" in freight
+    assert "g.ts 10.0%: Change" in out    # the name is only repeated within freight/
+    assert "Options" in render_outline(files, {}, 10_000, tokens, settings=OutlineConfig(generic_names=[], sibling_name_files=4))
+
+
+def test_generic_names_match_any_case_and_include_everyday_nouns():
+    files = {"lib/m.ts": OutlineFile(1.0, [(0.5, "Options"), (0.4, "message"), (0.3, "forEach"), (0.2, "stack"), (0.1, "Mailer")])}
+    out = render_outline(files, {}, 10_000, tokens)
+    assert "m.ts 100.0%: Mailer" in out
 
 
 def test_minified_files_give_no_sample_names():
     minified = [(0.5 - i / 100, chr(97 + i)) for i in range(12)] + [(0.01, "format")]
     files = {"lib/vendor.js": OutlineFile(0.5, minified), "lib/app.js": OutlineFile(0.5, [(0.1, "App")])}
     out = render_outline(files, {}, 10_000, tokens)
-    assert "lib/  2 files 100.0%\n" in out
-    assert "vendor.js 50.0%\n" in out
+    assert "lib/  2 files (js 2) 100.0%\n" in out
+    assert "vendor.js" not in out and "+1 more files" in out
 
 
 def test_directories_of_only_test_files_stay_folded():

@@ -77,6 +77,8 @@ class OutlineConfig:
     max_langs: int = 3
     max_edges: int = 12
     common_name_dirs: int = 5
+    common_name_files: int = 12       # names defined in more files than this aren't sample names
+    sibling_name_files: int = 3       # names defined by more files of one directory than this aren't samples there
     type_boost: float = 3.0           # sample score multiplier for classes, interfaces, types and enums
     short_name_length: int = 6        # names shorter than this get short_name_penalty as samples
     short_name_penalty: float = 0.3
@@ -94,7 +96,7 @@ class OutlineConfig:
     # Doc files listed in brackets after a directory in the outline: globs on file names, case-insensitive
     doc_globs: List[str] = field(default_factory=lambda: ["README*", "CLAUDE.md", "*.README.md"])
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
-    generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"])
+    generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "change", "forEach", "has", "id", "key", "keys", "length", "log", "main", "message", "name", "object", "options", "pop", "push", "remove", "report", "run", "set", "stack", "toString", "type", "update", "value", "values", "version"])
 
 
 @dataclass

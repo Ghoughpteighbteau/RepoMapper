@@ -37,9 +37,15 @@ too (counted in the outside figure) only when they hold at most PLAIN_OUTSIDE_SH
 Directory lines give the file count; the language breakdown `(ts 3, js 2)` is only on truncated directories (folded, or
 open with `+N more dirs`/files) whose languages differ from their parent's (other set, or top share more than REPEAT_SHARE_GAP off). Test/config counts follow the same rule: only on truncated directories.
 
+A file with no sample names (nothing defined, or only names skipped above: `x.api.ts`, `app-routing.ts`) gets no line: it is
+counted in its directory's file count and in `+N more files`, and makes the directory count as truncated. A directory whose
+files all lack names lists none (just `+N files` when open); costs are cached per directory as before.
+
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
 but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
-minified files (definitions mostly single letters), and generic names (push, set, id) from config. The rest are
+minified files (definitions mostly single letters), names defined in more than common_name_files files or by more than
+sibling_name_files files of one directory (Change, Options in every file of a package), and generic names (push, set, id,
+message; any case) from config. The rest are
 ordered by rank times ranking's identifier weight (names defined in many files down), a boost for classes,
 interfaces and types, and a penalty for short names.
 
@@ -107,7 +113,8 @@ class Dir:
     name: str = ""                                     # label below its parent; "b/c/d" for a collapsed chain
     chain: List[str] = field(default_factory=list)     # paths of the dirs collapsed into this line ("a/b", "a/b/c")
     dirs: Dict[str, "Dir"] = field(default_factory=dict)
-    files: List[str] = field(default_factory=list)     # rel paths directly inside, highest rank first; no kind files
+    files: List[str] = field(default_factory=list)     # rel paths directly inside with sample names, highest rank first; no kind files
+    bare: List[str] = field(default_factory=list)      # files directly inside without sample names: counted, never listed
     hidden: List[str] = field(default_factory=list)    # test/config files directly inside: counted, never listed
     count: int = 0
     rank: float = 0.0
@@ -116,6 +123,11 @@ class Dir:
     defs: List[Tuple[float, str]] = field(default_factory=list)
     plain: bool = False                                # nothing parseable below: one folded line, not in its parents' totals
     outside: int = 0                                   # files of the chain's upper dirs that are not under this line's dir
+
+    @property
+    def own(self) -> bool:
+        """Holds files of its own (listed or not)."""
+        return bool(self.files or self.bare or self.hidden)
 
     @property
     def label(self) -> str:
@@ -155,7 +167,7 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain:
         parts = rel.split("/")
         for i, part in enumerate(parts[:-1]):
             node = node.dirs.setdefault(part, Dir("/".join(parts[:i + 1])))
-        (node.hidden if rel in kinds else node.files).append(rel)
+        (node.hidden if rel in kinds else node.files if files[rel].defs else node.bare).append(rel)
     for path, langs in plain.items():
         node = root
         parts = path.split("/")
@@ -167,7 +179,7 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain:
         if d.plain:
             return
         d.files.sort(key=lambda f: files[f].rank, reverse=True)
-        for f in d.files + d.hidden:
+        for f in d.files + d.bare + d.hidden:
             d.count += 1
             d.rank += files[f].rank
             d.langs[os.path.splitext(f)[1].lstrip(".") or "?"] += 1
@@ -187,7 +199,7 @@ def build_tree(files: Dict[str, OutlineFile], kinds: Dict[str, str] = {}, plain:
 
     def merge_target(sub: Dir) -> Optional[Tuple[str, Dir]]:
         """The (name, subdirectory) sub merges into its line with, if any."""
-        if not sub.files and not sub.hidden and len(sub.dirs) == 1:
+        if not sub.own and len(sub.dirs) == 1:
             return next(iter(sub.dirs.items()))
         code = {name: s for name, s in sub.dirs.items() if not s.plain}
         if merge_share > 1 or not code:
@@ -245,21 +257,25 @@ def sample_score(rank: float, name: str, is_type: bool, definers: int, settings:
 def sample_defs(files: Dict[str, OutlineFile], kinds: Dict[str, str], settings: OutlineConfig,
                 weights: IdentifierWeightConfig = IdentifierWeightConfig()) -> Dict[str, OutlineFile]:
     """files with defs cut to their sample names, best first by sample_score: none for test/config kinds and
-    minified files, and no names defined in more than common_name_dirs directories or listed in generic_names."""
+    minified files, and no names defined in more than common_name_dirs directories or common_name_files files, by more
+    than sibling_name_files files of one directory, or listed in generic_names (any case)."""
     dirs_of: Dict[str, Set[str]] = defaultdict(set)
     files_of: Counter = Counter()
+    siblings: Counter = Counter()   # (directory, name) -> files of that directory defining it
     for rel, f in files.items():
         if rel not in kinds:
-            for _rank, name in f.defs:
+            for name in {name for _rank, name in f.defs}:
                 dirs_of[name].add(posixpath.dirname(rel))
                 files_of[name] += 1
-    generic = set(settings.generic_names)
+                siblings[posixpath.dirname(rel), name] += 1
+    generic = {name.lower() for name in settings.generic_names}
     out = {}
     for rel, f in files.items():
         names = [name for _rank, name in f.defs]
         keep = [] if rel in kinds or mostly_single_letters(names) else sorted(
             ((sample_score(rank, name, name in f.types, files_of[name], settings, weights), name) for rank, name in f.defs
-             if len(dirs_of[name]) <= settings.common_name_dirs and name not in generic),
+             if len(dirs_of[name]) <= settings.common_name_dirs and files_of[name] <= settings.common_name_files
+             and siblings[posixpath.dirname(rel), name] <= settings.sibling_name_files and name.lower() not in generic),
             key=lambda pair: -pair[0])   # stable: ties keep rank order
         out[rel] = OutlineFile(f.rank, keep[:settings.defs_per_file], f.types)
     return out
@@ -341,7 +357,7 @@ def render_outline(
 
     def lone_dir(d: Dir) -> bool:
         """The root holding nothing but one directory: its line would repeat that directory's."""
-        return not d.path and not d.files and not d.hidden and len(d.dirs) == 1
+        return not d.path and not d.own and len(d.dirs) == 1
 
     def repeats_parent(d: Dir) -> bool:
         """d's languages (top max_langs) are its parent's, with the top one's share within REPEAT_SHARE_GAP of it. The root
@@ -440,14 +456,15 @@ def render_outline(
 
     def file_lines(d: Dir, indent: str, limit: int) -> List[str]:
         lines = [file_line(f, indent + "  ") for f in d.files[:limit]]
-        if len(d.files) > limit:
-            more = len(d.files) - limit
-            lines.append(f"{indent}  +{more} more files" if limit else f"{indent}  +{more} file{'' if more == 1 else 's'}")
+        more = max(len(d.files) - limit, 0) + len(d.bare)
+        if more:
+            listed = bool(lines)
+            lines.append(f"{indent}  +{more} more files" if listed else f"{indent}  +{more} file{'' if more == 1 else 's'}")
         return lines
 
     def truncated(d: Dir, limit: int) -> bool:
         """An open dir that hides some of its subdirectories or files."""
-        return len(d.dirs) > len(shown(d)) or len(d.files) > limit
+        return len(d.dirs) > len(shown(d)) or len(d.files) > limit or bool(d.bare)
 
     def open_lines(d: Dir, depth: int, limit: int) -> List[str]:
         """d's own lines when open, with its subdirectories folded and up to limit files."""
@@ -529,7 +546,7 @@ def render_outline(
                 return next((s for s in d.dirs.values() if rel.startswith(s.path + "/")), None)
 
             d = child(root)
-            while d is not None and not d.files and child(d):
+            while d is not None and not d.own and child(d):
                 d = child(d)
             area_cache[rel] = d.path if d is not None else ""
         return area_cache[rel]
@@ -718,7 +735,7 @@ def render_outline(
                 push(1, score, "more", d, level)
 
         def offer_children(d: Dir, subs: List[Dir], level: int):
-            if is_core(d) and (d.files or len(d.dirs) != 1):
+            if is_core(d) and (d.own or len(d.dirs) != 1):
                 level += 1    # a level of core code is open below this directory
             for sub in subs:
                 offer(sub, level if is_core(sub) else 0)
