@@ -267,18 +267,21 @@ async def search_identifiers(
     include_definitions: bool = True,
     include_references: bool = True
 ) -> Dict[str, Any]:
-    """Search for identifiers in code files. Get back a list of matching identifiers with their file, line number, and context.
-       Results are sorted exact matches first, then definitions, then references by file and line with test
-       files last. Hits on nearby lines share one result (`line` is the first, `lines` lists all, `names` lists
-       differing names). `exact` (true/false) is only present when some hits are substring matches (e.g.
-       `get_tags_raw` for `get_tags`).
+    """Search for identifiers in code files. Get back `results`: one entry per file, `{file, hits: [...]}`, each hit
+       with its line number, name, `kind` (def/ref) and `context` (source lines around it, without the path).
+       Within the ranking, exact matches come first, then definitions, then references by file and line with test
+       files last; files are ordered by their best hit and hits keep that ranking inside a file. Hits on nearby
+       lines share one hit (`line` is the first, `lines` lists all, `names` lists differing names). `exact`
+       (true/false) is only present when some hits are substring matches (e.g. `get_tags_raw` for `get_tags`).
+       `more_hits` is present only when `max_results` cut the result: that many further hits were not returned
+       (raise `max_results` to see them; without it the result is complete).
        When searching, just use the identifier name without any special characters, prefixes or suffixes. The search is 
        case-insensitive. Files matching .gitignore or .repomap/ignore are skipped; if hits come from vendored,
        minified or generated files, suggest adding them to .repomap/ignore.
 
     Args:
         query: Search query (identifier name)
-        max_results: Maximum number of results to return
+        max_results: Maximum number of hits to return (hits on nearby lines count separately before merging)
         context_lines: Number of lines of context to show
         include_definitions: Whether to include definition occurrences
         include_references: Whether to include reference occurrences
@@ -333,6 +336,7 @@ async def search_identifiers(
         is_test = test_file_checker(areas)
         matching_tags.sort(key=lambda t: (t.name.lower() != query_lower, t.kind != "def", is_test(t.rel_fname),
                                           t.rel_fname, t.line))
+        more_hits = max(0, len(matching_tags) - max_results)
         matching_tags = matching_tags[:max_results]
 
         # Hits whose context windows touch share one block, placed where its best hit ranks
@@ -346,7 +350,7 @@ async def search_identifiers(
             else:
                 blocks.append([tag])
 
-        results = []
+        hit_blocks = []
         for block in blocks:
             block.sort(key=lambda t: t.line)
             first = block[0]
@@ -354,8 +358,9 @@ async def search_identifiers(
                            for n in range(max(1, t.line - context_lines), t.line + context_lines + 1)})
             context = repo_map.render_tree(str(Path(project_root) / first.rel_fname), first.rel_fname, lois)
             if context:
+                # render_tree opens with "<path>:"; the file entry already names the path
+                context = context.split("\n", 1)[1] if context.startswith(first.rel_fname + ":\n") else context
                 result = {
-                    "file": first.rel_fname,
                     "line": first.line,
                     "name": first.name,
                     "kind": "def" if any(t.kind == "def" for t in block) else "ref",
@@ -366,12 +371,20 @@ async def search_identifiers(
                     result["lines"] = [t.line for t in block]
                 if len({t.name for t in block}) > 1:
                     result["names"] = sorted({t.name for t in block})
-                results.append(result)
-        if all(r["exact"] for r in results):
-            for r in results:
+                hit_blocks.append((first.rel_fname, result))
+        if all(r["exact"] for _, r in hit_blocks):
+            for _, r in hit_blocks:
                 del r["exact"]
 
+        # One entry per file, in the order of each file's best-ranked block; blocks keep rank order within it
+        by_file: Dict[str, list] = {}
+        for rel_fname, result in hit_blocks:
+            by_file.setdefault(rel_fname, []).append(result)
+        results = [{"file": f, "hits": hs} for f, hs in by_file.items()]
+
         response = {"results": results, "hint": hint}
+        if more_hits:
+            response["more_hits"] = more_hits
         errors = parse_error_summary(repo_map.parse_errors, project_root)
         if errors:
             response["parse_errors"] = errors

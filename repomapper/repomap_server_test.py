@@ -14,9 +14,20 @@ def isolated_project(tmp_path, monkeypatch):
     monkeypatch.setattr(repomap_server, "CREATED_FILES", [])
 
 
-def search(**kwargs):
+def search_raw(**kwargs):
     fn = getattr(repomap_server.search_identifiers, "fn", repomap_server.search_identifiers)
     return asyncio.run(fn(**kwargs))
+
+
+def flat(response):
+    """Hits of a grouped response in order, each with its file added."""
+    return [{"file": f["file"], **h} for f in response["results"] for h in f["hits"]]
+
+
+def search(**kwargs):
+    """Like search_raw, but `results` is the flat hit list (the grouped shape is tested separately)."""
+    response = search_raw(**kwargs)
+    return {**response, "results": flat(response)} if "results" in response else response
 
 
 def test_search_context_lines_are_capped(tmp_path):
@@ -140,3 +151,36 @@ def test_search_uses_areas_toml_test_kinds(tmp_path):
     (tmp_path / "z.py").write_text("def use():\n    interleave()\n")
 
     assert hits(search(query="interleave", context_lines=0)) == [("z.py", 2), ("checks/a.py", 2)]
+
+
+def test_search_groups_hits_by_file_and_strips_the_path_from_context(tmp_path):
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n" + "\n" * 10 + "interleave();\n")
+    (tmp_path / "b.ts").write_text("interleave();\n")
+
+    response = search_raw(query="interleave", context_lines=0)
+
+    assert [f["file"] for f in response["results"]] == ["a.ts", "b.ts"]
+    assert [h["line"] for h in response["results"][0]["hits"]] == [1, 12]
+    assert all("file" not in h for f in response["results"] for h in f["hits"])
+    assert all("a.ts" not in h["context"] and "b.ts" not in h["context"] for h in flat(response))
+    assert "interleave" in response["results"][1]["hits"][0]["context"]
+
+
+def test_search_files_are_ordered_by_their_best_hit(tmp_path):
+    (tmp_path / "a.ts").write_text("interleave();\n")
+    (tmp_path / "b.ts").write_text("export function interleave() {}\n" + "\n" * 10 + "interleave();\n")
+
+    response = search_raw(query="interleave", context_lines=0)
+
+    assert [(f["file"], [h["kind"] for h in f["hits"]]) for f in response["results"]] == [
+        ("b.ts", ["def", "ref"]), ("a.ts", ["ref"])]
+
+
+def test_search_counts_hits_cut_by_max_results(tmp_path):
+    (tmp_path / "a.ts").write_text("export function interleave() {}\n" + "".join("\n" * 10 + "interleave();\n" for _ in range(4)))
+
+    cut = search_raw(query="interleave", context_lines=0, max_results=2)
+    full = search_raw(query="interleave", context_lines=0)
+
+    assert len(flat(cut)) == 2 and cut["more_hits"] == 3
+    assert "more_hits" not in full and len(flat(full)) == 5
