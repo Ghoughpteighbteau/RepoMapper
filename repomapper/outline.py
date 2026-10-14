@@ -1,13 +1,19 @@
 """
 Directory outline: the repo map shown when there's no context to zoom in on.
 
-The token budget is split top-down: every top-level area gets enough to open one level, the rest goes to
-siblings by sqrt(files) times areas.toml importance, recursively; a directory whose share can't hold its
-own lines stays folded to one summary line. A large directory (at least LARGE_DIR_MIN_FILES files and
-LARGE_DIR_FRACTION of the repo's) always opens a level when its parent does: if its share can't hold its
-files too, it lists just its biggest subdirectories folded, `+N more dirs` and `+M files`. Budget a share
-couldn't use goes back to still-folded siblings heaviest first, but only to those with at least
-LEFTOVER_MIN_WEIGHT of the siblings' weight, so small cheap directories don't open down to files.
+The token budget is spent on a priority queue of expansions. Everything starts folded to one line. A candidate
+is opening a folded directory (its own line, its first FIRST_LEVEL_DIRS subdirectories folded, its biggest
+files) or listing FIRST_LEVEL_DIRS more subdirectories of an open one (up to dirs_per_dir), scored by areas.toml
+importance x sqrt(files) x activity / (tokens it costs x display depth). The best candidate that fits is taken
+until nothing does; opening a directory makes its subdirectories candidates, so the outline grows from the top
+down, shallow before deep. Core areas come first: a core directory with no open core level above it, and the
+directories above a core one, open before anything else (a directory that only passes through to one
+subdirectory isn't a level). Activity is 1 for a directory with `active_commits` commits in the last 90 days,
+down to `idle_activity` for an idle one, so idle normal and low directories stay folded, and a flat directory
+of many files (`lib/repositories/src`) lists its top files. A directory that doesn't fit whole opens lean if it
+can (at least MIN_LEAN_DIRS subdirectories folded, no file lines, `+N more dirs`). Subdirectories are ordered
+by sqrt(files) x (PageRank relative to the biggest sibling + activity), so shared code everyone references
+doesn't outrank where the work happens.
 Single-child chains (a directory with no files and one subdirectory) are one line: `java/com/acme/email/`. Share of PageRank is shown on each line. Edges between the
 displayed nodes show which areas depend on which: `a <-> b` when both ways, and labels relative to the
 deepest common directory (`lib/types/: task.ts -> user.ts`). A directory's edges to its own listed files
@@ -39,6 +45,7 @@ Lines below MIN_SHOWN_RANK of the PageRank show no percentage. Git activity show
 on file lines only for hot files (HOT_FILE_COMMITS in the last 90 days).
 """
 
+import heapq
 import math
 import os
 import posixpath
@@ -50,15 +57,14 @@ from repomapper.areas import Areas, annotation
 from repomapper.config import IdentifierWeightConfig, OutlineConfig, identifier_weight
 from repomapper.utils import mostly_single_letters
 
-IMPORTANCE_WEIGHTS = {"core": 4.0, "normal": 1.0, "low": 0.25}   # areas.toml importance -> share multiplier
-LARGE_DIR_MIN_FILES = 100   # a "large" directory has at least this many files...
-LARGE_DIR_FRACTION = 0.1    # ...and this share of the repo's files; it always opens a level (see docstring)
-LEFTOVER_MIN_WEIGHT = 0.1   # share of the siblings' weight a folded directory needs to get leftover budget
+IMPORTANCE_WEIGHTS = {"core": 4.0, "normal": 1.0, "low": 0.25}   # areas.toml importance -> score multiplier
 MIN_SHOWN_RANK = 0.001     # lines with a smaller share of PageRank show no percentage
 HOT_FILE_COMMITS = 5       # file lines show git activity only with this many commits in the last 90 days
 MAX_PLAIN_DIRS = 12        # at most this many non-code directory lines in the whole outline, biggest first
 PLAIN_DIR_MIN_FILES = 3    # a non-code directory needs at least this many files to be shown
 PLAIN_BUDGET_SHARE = 0.15  # share of max_tokens all non-code directory lines may use
+FIRST_LEVEL_DIRS = 6       # an opened directory lists this many subdirectories at first; more are separate expansions
+MIN_LEAN_DIRS = 3          # a directory that doesn't fit whole opens lean only with at least this many subdirectories listed
 DEP_LINE_TOKENS = 20   # budget reserved per dependency line while choosing which directories to open
 
 HEADER = (
@@ -290,15 +296,23 @@ def render_outline(
             root = build_tree(files, kinds, kept)
             doc_cache.clear()
 
-    shown_cache: Dict[str, List[Dir]] = {}
-    shown_limit: Dict[str, int] = {}   # fewer than dirs_per_dir for a large directory with a small budget
+    ranked_cache: Dict[str, List[Dir]] = {}
+    shown_limit: Dict[str, int] = {}   # subdirectories listed per open directory; grows with the budget, up to dirs_per_dir
+
+    def activity_factor(d: Dir) -> float:
+        """1 for a directory with settings.active_commits commits in 90 days, settings.idle_activity for an idle one."""
+        recent = min((recent_commits(d.path) or 0) / max(settings.active_commits, 1), 1.0)
+        return settings.idle_activity + (1 - settings.idle_activity) * recent
 
     def shown(d: Dir) -> List[Dir]:
-        """Subdirectories listed when d is open, biggest first; the rest become a '+N more dirs' line."""
-        if d.path not in shown_cache:
-            subs = sorted(d.dirs.values(), key=lambda s: (s.count, s.rank), reverse=True)
-            shown_cache[d.path] = subs[:shown_limit.get(d.path, settings.dirs_per_dir)]
-        return shown_cache[d.path]
+        """Subdirectories listed when d is open, best first; the rest become a '+N more dirs' line. Ordered by
+        sqrt(files) x (PageRank relative to the biggest sibling + activity): shared code everyone references
+        (lib/types) doesn't crowd out where work happens."""
+        if d.path not in ranked_cache:
+            top_rank = max((s.rank for s in d.dirs.values()), default=0.0) or 1.0
+            ranked_cache[d.path] = sorted(d.dirs.values(),
+                                          key=lambda s: (-math.sqrt(s.count) * (s.rank / top_rank + activity_factor(s)), s.path))
+        return ranked_cache[d.path][:shown_limit.get(d.path, settings.dirs_per_dir)]
 
     lean: Set[str] = set()   # large directories opened without their file lines
 
@@ -446,111 +460,114 @@ def render_outline(
     depth_cache: Dict[str, int] = {"": 0}
 
     def depth_of(d: Dir) -> int:
-        """Display depth (collapsed chains are one level), filled in as allocate walks down."""
+        """Display depth (collapsed chains are one level), filled in as directories are costed."""
         return depth_cache[d.path]
-
-    def large(d: Dir) -> bool:
-        return (bool(d.dirs) and not folds(d)
-                and d.count >= max(LARGE_DIR_MIN_FILES, LARGE_DIR_FRACTION * root.count))
 
     cost_cache: Dict[Tuple[str, str], int] = {}
 
     def cost(d: Dir, kind: str) -> int:
-        """Tokens of d's lines: "folded" (one line), "open" (own lines, subdirectories folded), "lean" (open
-        without file lines) or "full" (everything below it open). Lines are counted separately, +1 each for the newline."""
+        """Tokens of d's lines: "folded" (one line), "open" (own lines, subdirectories folded) or "lean" (open
+        without file lines). Lines are counted separately, +1 each for the newline."""
         key = (d.path, kind)
         if key not in cost_cache:
-            if kind == "full" and folds(d):
-                cost_cache[key] = cost(d, "folded")
-            elif kind == "full":
-                cost_cache[key] = cost(d, "open") + sum(cost(sub, "full") - cost(sub, "folded") for sub in shown(d))
-            else:
-                for sub in d.dirs.values():
-                    depth_cache.setdefault(sub.path, depth_of(d) + 1)
-                lines = ([folded_line(d, "  " * depth_of(d))] if kind == "folded"
-                         else open_lines(d, depth_of(d), files_per_dir if kind == "open" else 0))
-                cost_cache[key] = sum(token_count(line) + 1 for line in lines)
+            for sub in d.dirs.values():
+                depth_cache.setdefault(sub.path, depth_of(d) + 1)
+            lines = ([folded_line(d, "  " * depth_of(d))] if kind == "folded"
+                     else open_lines(d, depth_of(d), files_per_dir if kind == "open" else 0))
+            cost_cache[key] = sum(token_count(line) + 1 for line in lines)
         return cost_cache[key]
 
-    must_cache: Dict[str, int] = {}
-
-    def must(d: Dir) -> int:
-        """Tokens over its folded line that a large d needs to open a level, with its large subdirectories."""
-        if d.path not in must_cache:
-            must_cache[d.path] = (cost(d, "lean") - cost(d, "folded")
-                                  + sum(must(sub) for sub in shown(d) if large(sub)))
-        return must_cache[d.path]
-
     def fit_lean(d: Dir, budget: float) -> bool:
-        """Show as many of d's biggest subdirectories (folded, no file lines) as budget holds, at least one."""
-        for k in range(len(shown(d)), 0, -1):
+        """Show as many of d's best subdirectories (folded, no file lines) as budget holds, at least
+        MIN_LEAN_DIRS (or all of them if it has fewer)."""
+        for k in range(len(shown(d)), min(MIN_LEAN_DIRS, len(shown(d))) - 1, -1):
             if k < len(shown(d)):
                 shown_limit[d.path] = k
-                shown_cache.pop(d.path)
-                for kind in ("open", "lean", "full"):
+                for kind in ("open", "lean"):
                     cost_cache.pop((d.path, kind), None)
             if cost(d, "lean") <= budget:
                 return True
         return False
 
+    core_paths = {path for path in areas.entries if path and areas.resolve(path).importance == "core"}
+    toward_core = {"/".join(parts[:i]) for path in core_paths for parts in [path.split("/")] for i in range(1, len(parts))}
+
+    def is_core(d: Dir) -> bool:
+        return bool(d.path) and areas.resolve(d.path).importance == "core"
+
+    def first_in_line(d: Dir, level: int) -> bool:
+        """Tier 0: a core directory with no open core level above it, or one on the way to a core area."""
+        return (is_core(d) and level == 0) or d.path in toward_core or any(p in toward_core for p in d.chain)
+
     open_dirs: Set[str] = set()
 
-    def allocate(d: Dir, budget: float, top: bool = False) -> int:
-        """Open d if its lines fit budget, then split what's left among its subdirectories by
-        log(files) x importance, recursively. Returns the tokens used. With top, d's subdirectories (or those
-        of a single-subdirectory chain below it) are the top-level areas: each gets enough to open one level
-        before the weighted split."""
-        if folds(d):
-            return cost(d, "folded")
-        own = cost(d, "open")
-        if d.path and own > budget:
-            if not (large(d) and fit_lean(d, budget)):
-                return cost(d, "folded")
-            lean.add(d.path)
-            own = cost(d, "lean")
-        open_dirs.add(d.path)
-        subs = shown(d)
-        pool = budget - own
-        if top and len(subs) == 1 and not d.files:
-            return own - cost(subs[0], "folded") + allocate(subs[0], cost(subs[0], "folded") + pool, True)
+    def allocate(budget: float):
+        """Open the root, then repeatedly the best-scoring candidate that fits what's left, until nothing does.
+        Candidates: opening a folded subdirectory of an open directory (its first FIRST_LEVEL_DIRS subdirectories
+        folded, plus its files), and listing more subdirectories of an open one. A candidate's score is importance
+        x sqrt(files) x activity per token. Core areas come first: tier 0 is a core directory with no open core
+        level above it (pass-throughs to a single subdirectory aren't a level), and the directories above one."""
+        open_dirs.add(root.path)
+        left = budget - cost(root, "open")
+        queue: List[Tuple[int, float, int, str, Dir, int]] = []   # tier, -score, order, "open" or "more", dir, core level
+        order = 0
 
-        # Large subdirectories are guaranteed a level; with top, every top-level area too, when they all fit
-        needs = {sub.path: must(sub) if large(sub) else 0 for sub in subs}
-        mins = {sub.path: max(needs[sub.path], cost(sub, "open") - cost(sub, "folded"))
-                if top and not folds(sub) else needs[sub.path] for sub in subs}
-        reserved = sum(mins.values())
-        if reserved > pool:
-            mins, reserved = needs, sum(needs.values())
-        if reserved > pool:   # Not even the large ones fit: they share the pool in proportion to their needs
-            scale = max(pool, 0) / reserved if reserved else 0
-            mins, reserved = {path: need * scale for path, need in needs.items()}, max(pool, 0)
-        weights = {sub.path: math.sqrt(sub.count) * importance[areas.resolve(sub.path).importance] for sub in subs}
-        # Weighted split, capped at what each subdirectory can use fully open; the excess goes to the others
-        shares = dict(mins)
-        uncapped = [sub for sub in subs if cost(sub, "full") - cost(sub, "folded") > mins[sub.path]]
-        rest = pool - reserved
-        while uncapped and rest > 0:
-            total_weight = sum(weights[sub.path] for sub in uncapped) or 1
-            capped = [sub for sub in uncapped if shares[sub.path] + rest * weights[sub.path] / total_weight
-                      >= cost(sub, "full") - cost(sub, "folded")]
-            if not capped:
-                for sub in uncapped:
-                    shares[sub.path] += rest * weights[sub.path] / total_weight
-                break
-            for sub in capped:
-                rest -= cost(sub, "full") - cost(sub, "folded") - shares[sub.path]
-                shares[sub.path] = cost(sub, "full") - cost(sub, "folded")
-                uncapped.remove(sub)
-        for sub in subs:
-            pool -= allocate(sub, cost(sub, "folded") + shares[sub.path]) - cost(sub, "folded")
-        # A share too small to open its directory is left over: offer it to those still folded, heaviest first,
-        # skipping light ones (a cheap small directory would otherwise open fully on a heavy sibling's leftovers)
-        total_weight = sum(weights.values()) or 1
-        for sub in sorted(subs, key=lambda s: weights[s.path], reverse=True):
-            if sub.path not in open_dirs and pool >= 1 and weights[sub.path] >= LEFTOVER_MIN_WEIGHT * total_weight:
-                pool -= allocate(sub, cost(sub, "folded") + pool) - cost(sub, "folded")
-        return round(budget - pool)
+        def push(tier: int, score: float, kind: str, d: Dir, level: int):
+            nonlocal order
+            order += 1
+            heapq.heappush(queue, (tier, -score, order, kind, d, level))
+
+        def offer(d: Dir, level: int):
+            if folds(d) or not (d.dirs or d.files):
+                return
+            shown_limit[d.path] = min(len(d.dirs), FIRST_LEVEL_DIRS, settings.dirs_per_dir)
+            extra = max(cost(d, "open") - cost(d, "folded"), 1)
+            score = (importance[areas.resolve(d.path).importance] * math.sqrt(d.count) * activity_factor(d)
+                     / (extra * depth_of(d)))
+            push(0 if first_in_line(d, level) else 1, score, "open", d, level)
+
+        def offer_more(d: Dir, level: int):
+            """Another FIRST_LEVEL_DIRS of d's subdirectories, while it has any left under dirs_per_dir."""
+            have = shown_limit[d.path]
+            ranked = ranked_cache[d.path][have:min(have + FIRST_LEVEL_DIRS, settings.dirs_per_dir)]
+            if ranked:
+                extra = max(sum(cost(sub, "folded") for sub in ranked), 1)
+                score = (importance[areas.resolve(d.path).importance] * math.sqrt(sum(sub.count for sub in ranked))
+                         * activity_factor(d) / (extra * depth_of(d)))
+                push(1, score, "more", d, level)
+
+        def offer_children(d: Dir, subs: List[Dir], level: int):
+            if is_core(d) and (d.files or len(d.dirs) != 1):
+                level += 1    # a level of core code is open below this directory
+            for sub in subs:
+                offer(sub, level if is_core(sub) else 0)
+
+        offer_children(root, shown(root), 0)
+        while queue:
+            _tier, _score, _n, kind, d, level = heapq.heappop(queue)
+            if kind == "more":
+                have = shown_limit[d.path]
+                ranked = ranked_cache[d.path][have:min(have + FIRST_LEVEL_DIRS, settings.dirs_per_dir)]
+                while ranked and sum(cost(sub, "folded") for sub in ranked) > left:
+                    ranked = ranked[:-1]
+                if ranked:
+                    left -= sum(cost(sub, "folded") for sub in ranked)
+                    shown_limit[d.path] = have + len(ranked)
+                    offer_children(d, ranked, level)
+                    offer_more(d, level)
+                continue
+            extra = cost(d, "open") - cost(d, "folded")
+            if extra > left:
+                if not (d.dirs and fit_lean(d, cost(d, "folded") + left)):
+                    continue
+                lean.add(d.path)
+                extra = cost(d, "lean") - cost(d, "folded")
+            open_dirs.add(d.path)
+            left -= extra
+            offer_children(d, shown(d), level)
+            if d.path not in lean:
+                offer_more(d, level)
 
     tree_budget = max_tokens - min(max_edges * DEP_LINE_TOKENS, max_tokens // 5) - token_count(HEADER) - 2
-    allocate(root, tree_budget, top=True)
+    allocate(tree_budget)
     return with_dependencies(open_dirs)

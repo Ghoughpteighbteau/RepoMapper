@@ -133,6 +133,8 @@ CONFIG_TEMPLATE = """\
 # type_boost = 3.0             # sample names: classes, interfaces, types and enums score this much higher
 # short_name_length = 6        # sample names shorter than this...
 # short_name_penalty = 0.3      # ...score this much lower (names defined in many files also lose, see [ranking.identifier_weight])
+# active_commits = 10          # the outline opens active directories first: this many commits in 90 days is fully active...
+# idle_activity = 0.25         # ...and a directory with none scores this much (1 turns the activity tilt off; it also orders subdirectories)
 # Builtin and everyday method names (push, set, id, log) are never sample names:
 # generic_names = ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"]
 

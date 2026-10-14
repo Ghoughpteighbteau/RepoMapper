@@ -221,7 +221,7 @@ def test_directories_of_only_test_files_stay_folded():
     files = {**leaf_files("src", 3, 0.3), **leaf_files("tests/unit", 5, 0.01), **leaf_files("tests/e2e", 5, 0.01)}
     areas = Areas(globs={"tests/**": Area(importance="low", kind="test")})
     out = render_outline(files, {}, 10_000, tokens, areas=areas)
-    assert "\n  tests/  10 files (py 10; 10 test) 10.0%\n" in out
+    assert "\n  tests/  10 files (py 10; 10 test) 10.0%" in out
     assert "unit/" not in out
     assert "src_0" in out
 
@@ -245,7 +245,9 @@ WIDE = {
 
 
 def test_wide_popular_dir_opens_before_small_deep_ones_open_to_files():
-    out = render_outline(WIDE, {}, 900, tokens)
+    # web/ is where the commits are; the services are idle
+    recent = recent_of({"web": 50, "web/src": 50, "web/src/app": 50, **{f"web/src/app/domain{d:02}": 5 for d in range(30)}})
+    out = render_outline(WIDE, {}, 900, tokens, recent_commits=recent)
     assert "app/  " in out and "domain29/  49 files" in out    # biggest children listed folded
     assert "more dirs" in out
     assert ".java" not in out                                     # email/ and cas/ don't open down to files
@@ -416,7 +418,7 @@ def test_non_code_directory_is_one_line_however_deep_and_has_no_share_or_edges()
 
 def test_small_non_code_directories_and_all_but_the_biggest_few_are_dropped():
     paths = plain("tiny", 2) + sum((plain(f"d{i:02}", 3 + i) for i in range(20)), [])
-    out = render_outline(FILES, EDGES, 100_000, tokens, plain_files=paths)
+    out = render_outline(FILES, EDGES, 100_000, tokens, plain_files=paths, settings=OutlineConfig(dirs_per_dir=50))
     assert "tiny/" not in out
     assert sum(1 for line in out.split("\n") if "(sql" in line) == MAX_PLAIN_DIRS
     assert "d19/" in out and "d00/" not in out
@@ -432,3 +434,78 @@ def test_non_code_lines_are_budgeted_like_other_lines():
 def test_hidden_directories_are_skipped():
     out = render_outline(FILES, EDGES, 10_000, tokens, plain_files=plain(".github/workflows", 6, "yml"))
     assert "github" not in out
+
+
+# Priority-queue expansion: importance x sqrt(files) x activity / token cost, best first until the budget is spent
+def recent_of(table):
+    return lambda path: table.get(path, 0)
+
+
+def test_core_area_opens_a_first_level_before_busier_cheaper_dirs():
+    files = {**leaf_files("core/src/alpha", 6, 0.001), **leaf_files("core/src/beta", 6, 0.001),
+             **{rel: f for i in range(8) for rel, f in leaf_files(f"busy/d{i}", 2, 0.05).items()}}
+    areas = Areas({"core": Area(importance="core")})
+    recent = recent_of({f"busy/d{i}": 30 for i in range(8)} | {"busy": 240})
+    out = render_outline(files, {}, 290, tokens, areas=areas, recent_commits=recent)
+    assert "core/src/  12 files" in out and "alpha/  6 files" in out     # core/src opened its first level...
+    assert "\n  busy/  16 files (py 16) 80.0%:" in out and "d0/" not in out   # ...while the busy dirs are still folded
+    assert tokens(out) <= 290
+
+
+def test_idle_directory_stays_folded_while_an_active_one_of_the_same_size_opens():
+    files = {**leaf_files("busy/a", 5, 0.1), **leaf_files("busy/b", 5, 0.1),
+             **leaf_files("idle/a", 5, 0.1), **leaf_files("idle/b", 5, 0.1)}
+    recent = recent_of({"busy": 40, "busy/a": 20, "busy/b": 20})
+    probe = render_outline(files, {}, 10_000, tokens, recent_commits=recent)
+    budget = tokens(probe) * 2 // 3     # room for part of the layout, not all of it
+    out = render_outline(files, {}, budget, tokens, recent_commits=recent)
+    assert "busy/  10 files" in out and "a/  5 files" in out
+    assert "idle/  10 files" in out and "\n  a/  5 files" not in out.split("idle/")[1]
+    assert tokens(out) <= budget
+
+
+def test_flat_large_core_directory_lists_its_top_files():
+    files = {**{f"repos/src/r{i:03}.ts": OutlineFile(0.002, [(0.002, f"Repo{i:03}")]) for i in range(221)},
+             **leaf_files("api/routes", 4, 0.01), **leaf_files("misc/a", 3, 0.01), **leaf_files("misc/b", 3, 0.01)}
+    for i in range(20):    # 4,000 files elsewhere: the flat directory is no "large dir" (a tenth of the repo)
+        files.update(leaf_files(f"bulk/d{i:02}", 200, 0.0001))
+    areas = Areas({"repos": Area(importance="core")})
+    out = render_outline(files, {}, 700, tokens, areas=areas)
+    assert "r000.ts" in out and "+211 more files" in out
+    assert tokens(out) <= 700
+
+
+def test_children_are_ordered_by_rank_and_activity_not_rank_alone():
+    files = {**leaf_files("pkg/shared", 4, 0.02), **leaf_files("pkg/work", 4, 0.01), **leaf_files("pkg/quiet", 4, 0.01)}
+    settings = OutlineConfig(dirs_per_dir=1)
+    out = render_outline(files, {}, 10_000, tokens, settings=settings, recent_commits=recent_of({"pkg/work": 30}))
+    assert "work/  4 files" in out and "shared/" not in out
+    assert "+2 more dirs" in out
+
+
+def test_activity_settings_are_configurable():
+    files = {**leaf_files("work/a", 5, 0.1), **leaf_files("work/b", 5, 0.1),
+             **leaf_files("idle/a", 5, 0.1), **leaf_files("idle/b", 5, 0.1)}   # the idle one sorts first on ties
+    recent = recent_of({"work": 40, "work/a": 20, "work/b": 20})
+    budget = tokens(render_outline(files, {}, 10_000, tokens, recent_commits=recent)) * 2 // 3
+    default = render_outline(files, {}, budget, tokens, recent_commits=recent)
+    blind = render_outline(files, {}, budget, tokens, recent_commits=recent, settings=OutlineConfig(idle_activity=1.0))
+    assert "\n    a/  5 files" in default.split("work/")[1] and "idle/  10 files (py 10) 100.0%:" in default
+    assert "idle/  10 files (py 10) 100.0%\n" in blind
+
+
+def test_a_wide_directory_lists_a_few_subdirectories_first_and_more_as_the_budget_grows():
+    files = {rel: f for i in range(20) for rel, f in leaf_files(f"wide/d{i:02}", 5, 0.01).items()}
+    sizes = []
+    for budget in (350, 600, 10_000):
+        out = render_outline(files, {}, budget, tokens)
+        assert tokens(out) <= budget
+        sizes.append(sum(1 for line in out.split("\n") if " 5 files (py 5)" in line))
+    assert 3 <= sizes[0] <= 6 < sizes[1] <= 12 == sizes[2]
+
+
+def test_shallow_directories_open_before_deeper_ones():
+    files = {rel: f for top in ("m", "n") for sub in ("a", "b") for rel, f in leaf_files(f"{top}/{sub}", 10, 0.01).items()}
+    out = render_outline(files, {}, 400, tokens)
+    assert out.count(" 10 files (py 10)") == 4      # both m/ and n/ list their subdirectories...
+    assert "f0.py" not in out                       # ...before either opens one of them down to files

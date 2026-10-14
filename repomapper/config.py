@@ -79,6 +79,8 @@ class OutlineConfig:
     type_boost: float = 3.0           # sample score multiplier for classes, interfaces, types and enums
     short_name_length: int = 6        # names shorter than this get short_name_penalty as samples
     short_name_penalty: float = 0.3
+    active_commits: int = 10          # a directory with this many commits in 90 days counts as fully active
+    idle_activity: float = 0.25       # activity factor of a directory with no recent commits (1 = ignore activity)
     # Builtin and everyday method names: defined in few places but called everywhere, so they rank high
     generic_names: List[str] = field(default_factory=lambda: ["all", "add", "array", "describe", "error", "get", "has", "id", "key", "keys", "length", "log", "main", "name", "object", "pop", "push", "remove", "run", "set", "toString", "type", "update", "value", "values", "version"])
 
