@@ -35,7 +35,7 @@ focus directory outside the biggest subdirectory is not merged. Non-code sibling
 too (counted in the outside figure) only when they hold at most PLAIN_OUTSIDE_SHARE of the biggest subdirectory's files.
 
 Directory lines give the file count; the language breakdown `(ts 3, js 2)` is only on truncated directories (folded, or
-open with `+N more dirs`/files) whose languages differ from their parent's (other set, or top share more than REPEAT_SHARE_GAP off). Open directories keep just their unlisted test/config counts.
+open with `+N more dirs`/files) whose languages differ from their parent's (other set, or top share more than REPEAT_SHARE_GAP off). Test/config counts follow the same rule: only on truncated directories.
 
 Files areas.toml marks with a kind (tests, configs) count toward their directory, shown as `(py 40; 38 test)`,
 but are never listed as lines and give no sample names or edges, and a directory of nothing else stays folded. Sample names skip names defined in many directories (ngOnInit, value) and
@@ -354,16 +354,15 @@ def render_outline(
                 and abs(top[0][1] / d.count - up[0][1] / parent.count) <= REPEAT_SHARE_GAP)
 
     def summary(d: Dir, detail: bool = True) -> str:
-        """Dir line; the language breakdown only where the dir is truncated (folded, or listing less than it holds) and
+        """Dir line; the language breakdown and test/config counts only where the dir is truncated (folded, or listing less than it holds) and
         differs from its parent's."""
-        kinds = ", ".join(f"{n} {kind}" for kind, n in sorted(d.kinds.items()))
-        if detail and repeats_parent(d):
-            detail = False
-        if detail:
-            langs = ", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs))
-            counts = f" ({langs}; {kinds})" if kinds else f" ({langs})"
-        else:   # open dirs keep the unlisted test/config counts
-            counts = f" ({kinds})" if kinds else ""
+        parts = []
+        if detail:   # truncated dirs only: languages unless they repeat the parent's, and the unlisted test/config counts
+            if not repeats_parent(d):
+                parts.append(", ".join(f"{lang} {n}" for lang, n in d.langs.most_common(settings.max_langs)))
+            if d.kinds:
+                parts.append(", ".join(f"{n} {kind}" for kind, n in sorted(d.kinds.items())))
+        counts = f" ({'; '.join(parts)})" if parts else ""
         outside = f" (+{d.outside} file{'' if d.outside == 1 else 's'} outside)" if d.outside else ""
         line = f"{d.label}  {d.count} file{'' if d.count == 1 else 's'}{counts}{outside}{pct(d.rank)}"
         note = activity(d.path)

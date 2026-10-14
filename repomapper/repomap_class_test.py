@@ -346,7 +346,7 @@ def test_outline_demotes_test_files_from_areas_globs(tmp_path):
     (tmp_path / ".repomap" / "areas.toml").write_text('[globs."*_test.*"]\nimportance = "low"\nkind = "test"\n')
     out, _ = make_repomap(tmp_path).get_outline(files, 10_000)
 
-    assert "1 test" in out
+    assert "core_test.py" not in out   # hidden, and the root is not truncated so it shows no test count
     assert "test_helper" not in out and "Dependencies" not in out
 
 

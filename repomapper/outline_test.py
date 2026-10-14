@@ -735,3 +735,15 @@ def test_near_chain_merge_counts_small_non_code_siblings_as_outside_but_keeps_bi
     assert re.search(r"ui/src/app/  100 files .*\(\+5 files outside\)", small), small
     big = render_outline(code, {}, 10_000, tokens, plain_files=[f"ui/src/assets/a{i}.png" for i in range(30)])
     assert "outside" not in big and "assets/  30 files" in big
+
+
+
+def test_test_counts_show_on_folded_directories_only():
+    files = {
+        "pkg/a.py": OutlineFile(0.3, [(0.3, "Real")]),
+        "pkg/a_test.py": OutlineFile(0.5, [(0.5, "test_real")]),
+    }
+    folded = render_outline(files, {}, 10_000, tokens, areas=Areas(entries={"pkg": Area(fold=True)}, globs=TEST_GLOBS.globs))
+    assert "pkg/  2 files (py 2; 1 test)" in folded
+    large = render_outline(files, {}, 10_000, tokens, areas=TEST_GLOBS)
+    assert "test" not in large.split("\n", 2)[2]   # open, nothing hidden by truncation: counts only
