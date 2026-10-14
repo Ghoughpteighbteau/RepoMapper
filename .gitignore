@@ -5,3 +5,4 @@ build/
 *.egg-info/
 todo.md
 todo.worklog.md
+todo.worklog.*.md
